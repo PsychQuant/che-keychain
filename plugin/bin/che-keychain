@@ -1,0 +1,93 @@
+#!/bin/bash
+# che-keychain — wrapper that ensures ~/bin/che-keychain is current vs the
+# binaryVersion declared in this plugin's plugin.json, then execs it.
+#
+# Why ~/bin/ rather than running from the plugin cache:
+# - Other tools (CheTransportMCP --setup, scripts, future MCPs) need to find
+#   `che-keychain` via PATH from any process context. Claude Code adds plugin
+#   bin/ to the Bash tool's PATH only; MCP servers and external scripts don't
+#   inherit that. ~/bin/ is a stable, system-wide location that works for all.
+#
+# Pattern mirrors PsychQuant/che-transport-mcp's wrapper (signed-binary
+# auto-download via GitHub Release, sha-key version tracking sidecar).
+
+set -u
+
+REPO="PsychQuant/che-keychain"
+RELEASE_ASSET="CheKeychain"
+INSTALL_NAME="che-keychain"
+INSTALL_DIR="$HOME/bin"
+BINARY="$INSTALL_DIR/$INSTALL_NAME"
+VERSION_FILE="$INSTALL_DIR/.${INSTALL_NAME}.version"
+
+PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_JSON="$PLUGIN_ROOT/.claude-plugin/plugin.json"
+
+# Read binaryVersion (preferred) or version (fallback). Same dual-field pattern
+# the che-transport-mcp wrapper uses so shell-only plugin bumps don't trigger
+# spurious binary re-downloads.
+DESIRED_VERSION=""
+if [[ -f "$PLUGIN_JSON" ]]; then
+    DESIRED_VERSION=$(grep -oE '"binaryVersion":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" 2>/dev/null \
+        | head -1 | cut -d'"' -f4 || true)
+    if [[ -z "$DESIRED_VERSION" ]]; then
+        DESIRED_VERSION=$(grep -oE '"version":[[:space:]]*"[^"]+"' "$PLUGIN_JSON" 2>/dev/null \
+            | head -1 | cut -d'"' -f4 || true)
+    fi
+fi
+
+INSTALLED_VERSION=""
+[[ -f "$VERSION_FILE" ]] && INSTALLED_VERSION=$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || true)
+
+NEED_DOWNLOAD=false
+REASON=""
+if [[ ! -x "$BINARY" ]]; then
+    NEED_DOWNLOAD=true
+    REASON="binary not installed"
+elif [[ -n "$DESIRED_VERSION" ]] && [[ "$INSTALLED_VERSION" != "$DESIRED_VERSION" ]]; then
+    NEED_DOWNLOAD=true
+    REASON="plugin wants v${DESIRED_VERSION}, installed is v${INSTALLED_VERSION:-unknown}"
+fi
+
+if $NEED_DOWNLOAD; then
+    echo "che-keychain: $REASON — downloading from $REPO..." >&2
+    mkdir -p "$INSTALL_DIR"
+
+    URL=""
+    for API_URL in \
+        "${DESIRED_VERSION:+https://api.github.com/repos/$REPO/releases/tags/v$DESIRED_VERSION}" \
+        "https://api.github.com/repos/$REPO/releases/latest"
+    do
+        [[ -z "$API_URL" ]] && continue
+        URL=$(curl -sL --max-time 30 "$API_URL" 2>/dev/null \
+            | grep '"browser_download_url"' | grep "/$RELEASE_ASSET\"" | head -1 \
+            | sed 's/.*"\(https[^"]*\)".*/\1/')
+        [[ -n "$URL" ]] && break
+    done
+
+    if [[ -z "$URL" ]]; then
+        if [[ -x "$BINARY" ]]; then
+            echo "che-keychain: WARNING — no download URL found, keeping existing binary" >&2
+        else
+            echo "che-keychain: ERROR — no download URL found at $REPO. Install manually: https://github.com/$REPO/releases" >&2
+            exit 1
+        fi
+    else
+        if curl -sL --max-time 300 "$URL" -o "${BINARY}.tmp" 2>/dev/null; then
+            chmod +x "${BINARY}.tmp"
+            mv "${BINARY}.tmp" "$BINARY"
+            echo "${DESIRED_VERSION:-unknown}" > "$VERSION_FILE"
+            echo "che-keychain: installed v${DESIRED_VERSION:-latest}" >&2
+        else
+            rm -f "${BINARY}.tmp" 2>/dev/null
+            if [[ -x "$BINARY" ]]; then
+                echo "che-keychain: WARNING — download failed, keeping existing binary" >&2
+            else
+                echo "che-keychain: ERROR — download failed" >&2
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+exec "$BINARY" "$@"

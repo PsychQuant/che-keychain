@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "che-keychain",
+  "description": "Trust-isolated macOS keychain credential prompt — single signed binary that owns the input UI so callers (LLM agents, MCP servers, shell scripts) never see the typed value.",
+  "owner": {
+    "name": "Che Cheng"
+  },
+  "plugins": [
+    {
+      "name": "che-keychain",
+      "source": "./plugin",
+      "description": "Native NSAlert credential prompt rendered inside a signed binary's own process. set / set-pair / has / unset subcommands. Wrapper auto-downloads CheKeychain binary from the GitHub Release to ~/bin/che-keychain on first invocation so other tools (CheTransportMCP --setup, scripts) can find it via PATH lookup.",
+      "category": "productivity"
+    }
+  ]
+}
