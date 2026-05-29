@@ -28,6 +28,11 @@ enum PromptDialog {
         }
         app.activate(ignoringOtherApps: true)
 
+        // A CLI-launched NSApplication has no main menu, so NSAlert.runModal()
+        // has no key-equivalent binding for Cmd+C/V/X/A and the modal text
+        // fields silently fail to paste (issue #1). Install a standard Edit menu.
+        installEditMenuIfNeeded(app)
+
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = buildInformativeText(destination: destination, explain: explain)
@@ -65,6 +70,36 @@ enum PromptDialog {
         lines.append("")
         lines.append("Values are written to your macOS keychain (login.keychain-db, not iCloud-synced).")
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Edit menu (issue #1: dialog could not paste)
+
+    /// Builds a minimal main menu carrying a standard Edit menu (Cut/Copy/Paste/
+    /// Select All). macOS binds Cmd+C/V/X/A to these menu items' key equivalents;
+    /// without a main menu, NSAlert.runModal() can't dispatch Cmd+V to the focused
+    /// text field's `paste:` action. `target = nil` routes each action up the
+    /// responder chain to the active field editor. Factored out (not private) so
+    /// the structure is unit-testable without a GUI session.
+    static func makeMainMenuWithEditMenu() -> NSMenu {
+        let mainMenu = NSMenu()
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        return mainMenu
+    }
+
+    /// Installs the Edit menu onto the app once. Idempotent — the dialog may run
+    /// multiple times per process; an existing main menu is left intact.
+    private static func installEditMenuIfNeeded(_ app: NSApplication) {
+        guard app.mainMenu == nil else { return }
+        app.mainMenu = makeMainMenuWithEditMenu()
     }
 
     private static func buildAccessoryView(for fields: [PromptField]) -> (container: NSView, fieldViews: [NSTextField]) {
