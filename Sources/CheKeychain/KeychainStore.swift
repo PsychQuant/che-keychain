@@ -30,10 +30,12 @@ enum KeychainStore {
 
         var add = query
         add[kSecValueData as String] = Data(value.utf8)
-        if daemon, let access = allowAllAccess(label: "\(service)/\(account)") {
+        if daemon {
             // Daemon-readable: any process may read without a keychain prompt.
             // Use ONLY for low-sensitivity creds a headless launchd agent reads.
-            add[kSecAttrAccess as String] = access
+            // Fail loudly if the access can't be built — never silently store a
+            // prompt-on-read item, which would hang the very daemon this serves.
+            add[kSecAttrAccess as String] = try allowAllAccess(label: "\(service)/\(account)")
         }
         let status = SecItemAdd(add as CFDictionary, nil)
         guard status == errSecSuccess else {
@@ -76,17 +78,25 @@ enum KeychainStore {
     /// headless launchd daemon read the item without a SecurityAgent dialog.
     /// Uses the legacy SecAccess/SecACL API (deprecated but functional on the
     /// macOS file keychain, where generic-password items live).
-    private static func allowAllAccess(label: String) -> SecAccess? {
+    private static func allowAllAccess(label: String) throws -> SecAccess {
         var access: SecAccess?
-        guard SecAccessCreate(label as CFString, nil, &access) == errSecSuccess,
-              let acc = access else { return nil }
+        let createStatus = SecAccessCreate(label as CFString, nil, &access)
+        guard createStatus == errSecSuccess, let acc = access else {
+            throw KeychainError.osStatus(createStatus, operation: "SecAccessCreate")
+        }
         var aclList: CFArray?
-        guard SecAccessCopyACLList(acc, &aclList) == errSecSuccess,
-              let acls = aclList as? [SecACL] else { return acc }
+        let listStatus = SecAccessCopyACLList(acc, &aclList)
+        guard listStatus == errSecSuccess, let acls = aclList as? [SecACL] else {
+            throw KeychainError.osStatus(listStatus, operation: "SecAccessCopyACLList")
+        }
         for acl in acls {
             // nil trusted-application list = any application may use the item
             // without being prompted ("Allow all applications" in Keychain Access).
-            SecACLSetContents(acl, nil, label as CFString, SecKeychainPromptSelector(rawValue: 0))
+            let setStatus = SecACLSetContents(acl, nil, label as CFString,
+                                              SecKeychainPromptSelector(rawValue: 0))
+            guard setStatus == errSecSuccess else {
+                throw KeychainError.osStatus(setStatus, operation: "SecACLSetContents")
+            }
         }
         return acc
     }
