@@ -45,6 +45,19 @@ final class CommandParserTests: XCTestCase {
         }
     }
 
+    func testSetParsesDaemonFlag() throws {
+        let cmd = try CommandParser.parse("set", ["--service", "S", "--account", "A", "--daemon"])
+        guard case .set(let args) = cmd else { return XCTFail("expected .set, got \(cmd)") }
+        XCTAssertTrue(args.daemon)
+        XCTAssertFalse(args.secure)
+    }
+
+    func testSetDaemonDefaultsFalse() throws {
+        let cmd = try CommandParser.parse("set", ["--service", "S", "--account", "A"])
+        guard case .set(let args) = cmd else { return XCTFail() }
+        XCTAssertFalse(args.daemon)
+    }
+
     // MARK: - set-pair
 
     func testSetPairParses() throws {

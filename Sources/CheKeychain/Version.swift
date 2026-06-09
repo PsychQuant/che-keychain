@@ -2,7 +2,7 @@
 import Foundation
 
 enum AppVersion {
-    static let version = "0.1.0"
+    static let version = "0.2.0"
     static let versionString = "che-keychain \(version)"
     static let helpMessage = """
     \(versionString)
@@ -11,7 +11,7 @@ enum AppVersion {
       script, MCP) never sees the user's input; it only learns success / failure.
 
     USAGE
-      che-keychain set       --service S --account A [--label L] [--explain E] [--secure]
+      che-keychain set       --service S --account A [--label L] [--explain E] [--secure] [--daemon]
       che-keychain set-pair  --service S --visible-account I --secure-account S \\
                              [--visible-label LI] [--secure-label LS] [--title T] [--explain E]
       che-keychain has       --service S --account A
@@ -24,6 +24,11 @@ enum AppVersion {
       (service + account) so the user can verify a malicious caller isn't
       redirecting writes. Secure fields use NSSecureTextField (masked).
       Storage: login.keychain-db (local, NOT iCloud-synced).
+
+      `--daemon` stores the item with an "allow all applications" ACL so a
+      headless launchd agent can read it without a keychain-access prompt. The
+      value is still typed into THIS signed dialog (caller never sees it) — only
+      the storage ACL is relaxed. Use ONLY for low-sensitivity creds.
 
       `has`  exits 0 if the entry exists, 1 if it does not.
       `unset` removes an account (or all accounts under a service if --account
@@ -38,5 +43,8 @@ enum AppVersion {
       che-keychain set-pair --service che-transport-tdx \\
         --visible-account client_id --secure-account client_secret \\
         --title "che-transport-mcp setup"
+
+      # Daemon-readable secret (launchd agent reads it without a prompt)
+      che-keychain set --service bus-eta-logger --account tdx_secret --secure --daemon
     """
 }

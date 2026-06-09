@@ -31,6 +31,7 @@ struct SetArgs: Equatable {
     var label: String?
     var explain: String?
     var secure: Bool
+    var daemon: Bool = false
 }
 
 struct SetPairArgs: Equatable {
@@ -64,6 +65,7 @@ enum CommandParser {
         var label: String?
         var explain: String?
         var secure = false
+        var daemon = false
 
         var i = 0
         while i < args.count {
@@ -73,6 +75,7 @@ enum CommandParser {
             case "--label":   label   = try valueAfter(&i, args)
             case "--explain": explain = try valueAfter(&i, args)
             case "--secure":  secure  = true; i += 1
+            case "--daemon":  daemon  = true; i += 1
             default: throw CommandError.unknownOption(args[i])
             }
         }
@@ -80,7 +83,7 @@ enum CommandParser {
         guard let a = account else { throw CommandError.missingArgument("--account") }
         try validateIdentifier(s, field: "service")
         try validateIdentifier(a, field: "account")
-        return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure)
+        return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon)
     }
 
     // MARK: - set-pair
