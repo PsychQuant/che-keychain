@@ -19,7 +19,7 @@ enum KeychainError: Error, LocalizedError {
 /// che-transport-mcp's Auth.swift uses so other che-* projects can adopt
 /// the same shape.
 enum KeychainStore {
-    static func save(service: String, account: String, value: String) throws {
+    static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -30,6 +30,11 @@ enum KeychainStore {
 
         var add = query
         add[kSecValueData as String] = Data(value.utf8)
+        if daemon, let access = allowAllAccess(label: "\(service)/\(account)") {
+            // Daemon-readable: any process may read without a keychain prompt.
+            // Use ONLY for low-sensitivity creds a headless launchd agent reads.
+            add[kSecAttrAccess as String] = access
+        }
         let status = SecItemAdd(add as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw KeychainError.osStatus(status, operation: "add")
@@ -64,5 +69,25 @@ enum KeychainStore {
         guard status == errSecItemNotFound else {
             throw KeychainError.osStatus(status, operation: "delete")
         }
+    }
+
+    /// Builds a SecAccess whose every ACL trusts *all* applications (no prompt),
+    /// the programmatic equivalent of `security add-generic-password -A`. Lets a
+    /// headless launchd daemon read the item without a SecurityAgent dialog.
+    /// Uses the legacy SecAccess/SecACL API (deprecated but functional on the
+    /// macOS file keychain, where generic-password items live).
+    private static func allowAllAccess(label: String) -> SecAccess? {
+        var access: SecAccess?
+        guard SecAccessCreate(label as CFString, nil, &access) == errSecSuccess,
+              let acc = access else { return nil }
+        var aclList: CFArray?
+        guard SecAccessCopyACLList(acc, &aclList) == errSecSuccess,
+              let acls = aclList as? [SecACL] else { return acc }
+        for acl in acls {
+            // nil trusted-application list = any application may use the item
+            // without being prompted ("Allow all applications" in Keychain Access).
+            SecACLSetContents(acl, nil, label as CFString, SecKeychainPromptSelector(rawValue: 0))
+        }
+        return acc
     }
 }

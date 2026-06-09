@@ -60,7 +60,7 @@ case .set(let a):
             die("empty input — nothing stored.", exitCode: 1)
         }
         do {
-            try KeychainStore.save(service: a.service, account: a.account, value: value)
+            try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }

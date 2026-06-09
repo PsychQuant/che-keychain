@@ -50,4 +50,11 @@ final class KeychainStoreTests: XCTestCase {
     func testUnsetMissingIsNotError() {
         XCTAssertNoThrow(try KeychainStore.unset(service: service, account: "never-existed"))
     }
+
+    func testSaveDaemonRoundTrips() throws {
+        // Proves the allow-all SecAccess attaches without SecItemAdd rejecting it
+        // at runtime — the legacy-API (kSecAttrAccess) compatibility risk.
+        try KeychainStore.save(service: service, account: "daemon", value: "v", daemon: true)
+        XCTAssertTrue(KeychainStore.has(service: service, account: "daemon"))
+    }
 }
