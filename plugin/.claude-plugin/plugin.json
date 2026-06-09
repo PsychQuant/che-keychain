@@ -1,7 +1,7 @@
 {
   "name": "che-keychain",
-  "version": "0.1.0",
-  "binaryVersion": "0.1.0",
+  "version": "0.2.0",
+  "binaryVersion": "0.2.0",
   "description": "Trust-isolated macOS keychain credential prompt. Native NSAlert renders inside a signed binary's own process — caller (LLM / MCP / script) never sees the typed value. Wrapper auto-downloads CheKeychain binary from PsychQuant/che-keychain GitHub Release to ~/bin/che-keychain so consumers (CheTransportMCP --setup, etc.) can find it via PATH.",
   "author": {
     "name": "Che Cheng"
