@@ -8,7 +8,18 @@ enum KeychainError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .osStatus(let status, let op): return "keychain \(op) failed (OSStatus \(status))"
+        case .osStatus(let status, let op):
+            let text = (SecCopyErrorMessageString(status, nil) as String?) ?? ""
+            var msg = "keychain \(op) failed (OSStatus \(status)\(text.isEmpty ? "" : ": \(text)"))"
+            switch status {
+            case errSecInvalidOwnerEdit:   // -25244
+                msg += "\n  The existing item was created by another program, so its ACL cannot be changed here."
+                msg += "\n  Remove it first: che-keychain unset (if this tool owns it) or `security delete-generic-password`."
+            case errSecDuplicateItem:      // -25299
+                msg += "\n  An item with this service/account already exists and could not be overwritten."
+            default: break
+            }
+            return msg
         case .notFound: return "keychain item not found"
         }
     }
@@ -19,27 +30,45 @@ enum KeychainError: Error, LocalizedError {
 /// che-transport-mcp's Auth.swift uses so other che-* projects can adopt
 /// the same shape.
 enum KeychainStore {
+    /// Upsert: overwrite the value if the item exists, create it otherwise.
+    ///
+    /// Why not delete-then-add (#5): an item created by ANOTHER binary (the
+    /// `security` CLI, an older build of this tool, …) has a different keychain
+    /// owner, and SecItemDelete on it returns errSecInvalidOwnerEdit (-25244).
+    /// The old code discarded that status and then hit errSecDuplicateItem
+    /// (-25299) on SecItemAdd, with no path to ever overwrite. SecItemUpdate is
+    /// permitted on foreign-owned items (it changes the value, not the owner),
+    /// which is exactly the "overwrite" the caller asked for.
     static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        // Always delete-then-add so a re-run cleanly overwrites stale ACLs / labels.
-        SecItemDelete(query as CFDictionary)
-
-        var add = query
-        add[kSecValueData as String] = Data(value.utf8)
+        var attrs: [String: Any] = [kSecValueData as String: Data(value.utf8)]
         if daemon {
             // Daemon-readable: any process may read without a keychain prompt.
             // Use ONLY for low-sensitivity creds a headless launchd agent reads.
             // Fail loudly if the access can't be built — never silently store a
             // prompt-on-read item, which would hang the very daemon this serves.
-            add[kSecAttrAccess as String] = try allowAllAccess(label: "\(service)/\(account)")
+            attrs[kSecAttrAccess as String] = try allowAllAccess(label: "\(service)/\(account)")
         }
-        let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw KeychainError.osStatus(status, operation: "add")
+
+        let update = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+        switch update {
+        case errSecSuccess:
+            return
+        case errSecItemNotFound:
+            var add = query
+            add.merge(attrs) { _, new in new }
+            let status = SecItemAdd(add as CFDictionary, nil)
+            guard status == errSecSuccess else {
+                throw KeychainError.osStatus(status, operation: "add")
+            }
+        default:
+            // Never swallow: -25244 here means the item exists but is owned by
+            // another program and we tried to change its ACL (daemon mode).
+            throw KeychainError.osStatus(update, operation: "update")
         }
     }
 

@@ -20,6 +20,9 @@ enum AppVersion {
       che-keychain --help
 
     DETAILS
+      `set` / `set-pair` overwrite an existing item in place (upsert) — including
+      items created by other programs such as the `security` CLI.
+
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't
       redirecting writes. Secure fields use NSSecureTextField (masked).

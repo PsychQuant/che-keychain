@@ -14,6 +14,13 @@ final class KeychainStoreTests: XCTestCase {
 
     override func tearDown() {
         try? KeychainStore.unset(service: service)
+        // Foreign-owned items (seeded via `security`, see #5) can't be deleted by this
+        // binary — errSecInvalidOwnerEdit. Sweep them with the CLI that owns them.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["delete-generic-password", "-s", service]
+        p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+        try? p.run(); p.waitUntilExit()
         super.tearDown()
     }
 
@@ -49,6 +56,39 @@ final class KeychainStoreTests: XCTestCase {
 
     func testUnsetMissingIsNotError() {
         XCTAssertNoThrow(try KeychainStore.unset(service: service, account: "never-existed"))
+    }
+
+    // MARK: - Foreign-owned items (#5)
+    //
+    // An item created by another binary (here: the `security` CLI) has a different
+    // keychain owner. SecItemDelete on it returns errSecInvalidOwnerEdit (-25244),
+    // so the old delete-then-add strategy could never overwrite it — SecItemAdd
+    // then failed with errSecDuplicateItem (-25299). SecItemUpdate is allowed.
+
+    /// Creates an item owned by the `security` CLI, not by this test binary.
+    private func seedForeignItem(account: String, value: String) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["add-generic-password", "-s", service, "-a", account, "-w", value]
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0, "security add-generic-password failed")
+    }
+
+    /// Reads a value back through the `security` CLI — the store deliberately has no read API.
+    private func readForeign(account: String) throws -> String {
+        let p = Process(); let out = Pipe()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["find-generic-password", "-s", service, "-a", account, "-w"]
+        p.standardOutput = out; p.standardError = FileHandle.nullDevice
+        try p.run(); p.waitUntilExit()
+        return String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func testSaveOverwritesForeignOwnedItem() throws {
+        try seedForeignItem(account: "foreign", value: "stale")
+        try KeychainStore.save(service: service, account: "foreign", value: "fresh")
+        XCTAssertEqual(try readForeign(account: "foreign"), "fresh")
     }
 
     func testSaveDaemonRoundTrips() throws {
