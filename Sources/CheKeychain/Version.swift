@@ -20,17 +20,17 @@ enum AppVersion {
       che-keychain --help
 
     DETAILS
-      `set` / `set-pair` overwrite an existing item that THIS binary created:
-      same ACL mode → the value is updated in place; switching between normal and
-      --daemon → the item is deleted and re-added with the new ACL. An item created
-      by another program (e.g. the `security` CLI, or another copy of che-keychain
-      at a different path) is REFUSED before the dialog opens, with the exact
-      `che-keychain unset` command to run first: che-keychain never silently
-      replaces an item it did not create (an in-place update would leave the new
-      secret under that program's ACL and only look like success). Ownership is
-      judged by this binary's real path in the item's decrypt ACL (allow-all
-      items: by the ACL label service/account). `unset` deletes by reference and
-      therefore also removes items created by other programs.
+      `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
+      binary and nothing else, the value is updated in place (`--daemon` on such
+      an item deletes and re-adds it with the allow-all ACL). If the ACL trusts
+      any other application (e.g. the `security` CLI, or another copy of
+      che-keychain at a different path), `set` is REFUSED before the dialog opens
+      with the exact `che-keychain unset` command to run first: che-keychain never
+      silently replaces an item it did not create. An "allow all applications"
+      item carries no owner identity: `set --daemon` updates its value in place
+      (it is world-readable anyway); plain `set` refuses and names `unset`.
+      `unset` deletes by reference, so it also removes items created by other
+      programs, and reports every item it could not remove.
 
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't

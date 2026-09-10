@@ -181,7 +181,7 @@ enum CommandParser {
         guard !trimmed.isEmpty else {
             throw CommandError.invalidValue(field: field, reason: "must not be empty")
         }
-        if trimmed.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 }) }) {
+        if trimmed.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) }) {
             throw CommandError.invalidValue(field: field, reason: "contains control characters")
         }
     }

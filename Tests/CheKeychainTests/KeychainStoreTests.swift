@@ -18,7 +18,7 @@ final class KeychainStoreTests: XCTestCase {
         // Foreign-owned items (seeded via `security`, see #5) can't be deleted by this
         // binary — errSecInvalidOwnerEdit. Sweep them with the CLI that owns them.
         // `security` deletes one matching item per call — loop until it reports none left.
-        for _ in 0..<8 {
+        for _ in 0..<64 {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
             p.arguments = ["delete-generic-password", "-s", service]
@@ -39,7 +39,7 @@ final class KeychainStoreTests: XCTestCase {
         try KeychainStore.save(service: service, account: "a", value: "first")
         try KeychainStore.save(service: service, account: "a", value: "second")
         XCTAssertEqual(try readOwn(account: "a"), "second", "the headline requirement: the value really changed")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "a"), .own(daemonReadable: false))
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "a"), .own)
     }
 
     func testUnsetSpecificAccount() throws {
@@ -73,11 +73,12 @@ final class KeychainStoreTests: XCTestCase {
 
     /// Creates an item owned by the `security` CLI, not by this test binary.
     /// `-A` = allow-all decrypt ACL (the shape that fooled the round-2 build).
-    private func seedForeignItem(account: String, value: String, allowAll: Bool = false) throws {
+    private func seedForeignItem(account: String, value: String, allowAll: Bool = false, label: String? = nil) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         // Value is a non-secret test literal; argv visibility is acceptable here.
-        p.arguments = ["add-generic-password", "-s", service, "-a", account, "-w", value] + (allowAll ? ["-A"] : [])
+        p.arguments = ["add-generic-password", "-s", service, "-a", account, "-w", value]
+            + (allowAll ? ["-A"] : []) + (label.map { ["-l", $0] } ?? [])
         try p.run(); p.waitUntilExit()
         XCTAssertEqual(p.terminationStatus, 0, "security add-generic-password failed")
     }
@@ -141,31 +142,65 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
-    func testSaveRefusesForeignAllowAllItem() throws {
-        // `security add-generic-password -A` — allow-all decrypt ACL, but NOT ours.
-        // Round 2 short-circuited on allow-all and adopted such items as our own.
+    func testAllowAllItemsAreNeverClaimedAsOwn() throws {
+        // `security add-generic-password -A` — allow-all decrypt ACL. Such items
+        // carry no owner identity and any label can be forged (`-l 'S/A'` was the
+        // round-3 bypass), so plain `set` refuses; `set --daemon` may update the
+        // value in place because the item is world-readable by construction.
         try seedForeignItem(account: "open", value: "stale", allowAll: true)
-        for daemon in [false, true] {
-            XCTAssertThrowsError(try KeychainStore.save(service: service, account: "open", value: "fresh", daemon: daemon)) { err in
-                guard case KeychainError.foreignOwned = err else { return XCTFail("daemon=\(daemon): expected .foreignOwned, got \(err)") }
+        try seedForeignItem(account: "forged", value: "stale", allowAll: true, label: "\(service)/forged")
+        for acct in ["open", "forged"] {
+            XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: acct), .allowAll)
+            XCTAssertThrowsError(try KeychainStore.save(service: service, account: acct, value: "fresh")) { err in
+                guard case KeychainError.unattributable = err else { return XCTFail("\(acct): expected .unattributable, got \(err)") }
             }
+            XCTAssertEqual(try readForeign(account: acct), "stale", "plain set must not touch \(acct)")
+            XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: [acct], daemon: false)) { err in
+                guard case KeychainError.unattributable = err else { return XCTFail("preflight \(acct): got \(err)") }
+            }
+            XCTAssertNoThrow(try KeychainStore.preflight(service: service, accounts: [acct], daemon: true))
+            try KeychainStore.save(service: service, account: acct, value: "fresh", daemon: true)
+            XCTAssertEqual(try readForeign(account: acct), "fresh")
+            XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: acct), .allowAll, "value update must not touch the ACL")
         }
-        XCTAssertEqual(try readForeign(account: "open"), "stale")
+    }
+
+    func testCoTrustedItemIsForeign() throws {
+        // Decrypt ACL trusts `security` AND this binary → not ours (every list must contain us).
+        let me = URL(fileURLWithPath: Bundle.main.executablePath!).resolvingSymlinksInPath().path
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["add-generic-password", "-s", service, "-a", "shared", "-w", "stale", "-T", "/usr/bin/security", "-T", me]
+        try p.run(); p.waitUntilExit(); XCTAssertEqual(p.terminationStatus, 0)
+        guard case .foreign(let owners) = try KeychainStore.inspectExisting(service: service, account: "shared") else {
+            return XCTFail("co-trusted item must be foreign")
+        }
+        XCTAssertTrue(owners.contains("/usr/bin/security"), "owners=\(owners)")
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "shared", value: "fresh"))
+        XCTAssertEqual(try readForeign(account: "shared"), "stale")
     }
 
     func testSaveDaemonSwitchesOwnItemToDaemonReadable() throws {
-        // Own item, other mode → delete-then-add (we own it, so delete succeeds).
+        // Own prompt-on-read item + --daemon → delete by reference + re-add allow-all.
         try KeychainStore.save(service: service, account: "d", value: "v1")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own(daemonReadable: false))
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own)
         try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own(daemonReadable: true))
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
         XCTAssertEqual(try readOwn(account: "d"), "v2")
     }
 
-    func testSaveNonDaemonSwitchesDaemonItemBackToPromptOnRead() throws {
+    func testPlainSetRefusesDaemonItemAndNamesUnset() throws {
+        // A daemon item is allow-all and therefore unattributable: switching it back
+        // to prompt-on-read is an explicit `unset` then `set`, never a side effect.
         try KeychainStore.save(service: service, account: "d", value: "low", daemon: true)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "high")) { err in
+            guard case KeychainError.unattributable = err else { return XCTFail("expected .unattributable, got \(err)") }
+            let msg = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(msg.contains("che-keychain unset --service '\(service)' --account 'd'"), msg)
+        }
+        XCTAssertEqual(try readOwn(account: "d"), "low")
+        try KeychainStore.unset(service: service, account: "d")
         try KeychainStore.save(service: service, account: "d", value: "high")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own(daemonReadable: false))
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own)
         XCTAssertEqual(try readOwn(account: "d"), "high")
     }
 
@@ -173,7 +208,7 @@ final class KeychainStoreTests: XCTestCase {
         try KeychainStore.save(service: service, account: "d", value: "v1", daemon: true)
         try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)
         XCTAssertEqual(try readOwn(account: "d"), "v2", "the headline requirement: the value really changed")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own(daemonReadable: true))
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
     }
 
     func testPreflightRefusesBeforeAnythingIsWritten() throws {

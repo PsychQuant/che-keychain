@@ -15,6 +15,19 @@ enum KeychainError: Error, LocalizedError {
     /// More than one item matches service/account (e.g. one per keychain in the
     /// search list). We refuse to guess which one the caller means.
     case ambiguous(service: String, account: String, count: Int)
+    /// The item's decrypt ACL is only "allow all applications": it carries no
+    /// owner identity and any label in it can be forged, so it cannot be
+    /// attributed to this binary. Plain `set` refuses (replacing it would be a
+    /// destructive act on a possibly-foreign item); `set --daemon` may update
+    /// the value in place (the item is world-readable by construction).
+    case unattributable(service: String, account: String)
+    /// `unset` deleted `deleted` item(s) but could not delete `refused`
+    /// (account → why). Reported after the sweep so the user sees exactly what
+    /// remains; the remedy is the `security` CLI, not `unset` again.
+    case undeletable(service: String, deleted: Int, refused: [(account: String, reason: String)])
+    /// A mode switch (delete + re-add) failed after the delete; the original
+    /// item was restored (or not — `restored` says which).
+    case replaceFailed(service: String, account: String, addStatus: OSStatus, restored: Bool)
 
     var errorDescription: String? {
         switch self {
@@ -23,8 +36,8 @@ enum KeychainError: Error, LocalizedError {
             var msg = "keychain \(op) failed (OSStatus \(status)\(text.isEmpty ? "" : ": \(text)"))"
             switch status {
             case errSecInvalidOwnerEdit:   // -25244
-                msg += "\n  The item was created by another program, which SecItemDelete refuses to touch."
-                msg += "\n  `che-keychain unset --service <service> --account <account>` deletes it by reference instead."
+                msg += "\n  The keychain refused to let this binary modify or delete the item (owner edit)."
+                msg += "\n  Remove it with: security delete-generic-password -s <service> -a <account>"
             case errSecDuplicateItem:      // -25299
                 msg += "\n  An item with this service/account appeared between the ownership check and the write. Retry."
             default: break
@@ -50,7 +63,33 @@ enum KeychainError: Error, LocalizedError {
             \(n) keychain items match \(svc)/\(acct) (e.g. one per keychain in the search list). \
             Refusing to guess which one to write.
               Inspect them with:  security find-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
-              Remove the stale one with:  security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
+              To remove ALL of them:  che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
+              To remove one at a time (each call deletes the first match):  security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
+            """
+        case .unattributable(let svc, let acct):
+            return """
+            keychain item \(svc)/\(acct) already exists with an "allow all applications" ACL, which carries no \
+            owner identity — che-keychain cannot tell whether it created it.
+              Nothing was written to \(svc)/\(acct). Replacing an item that may belong to another program is destructive, \
+            so it is never a side effect of `set`.
+              If you want a prompt-on-read item here, remove it explicitly first (this deletes the stored secret), then retry:
+                che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
+              If you meant to update a daemon-readable item, pass --daemon (updates the value in place).
+            """
+        case .undeletable(let svc, let deleted, let refused):
+            let list = refused.map { "    \($0.account): \($0.reason)" }.joined(separator: "\n")
+            return """
+            unset --service \(svc): removed \(deleted) item(s); \(refused.count) could not be removed by che-keychain:
+            \(list)
+              Remove those with the security CLI (each call deletes the first match):
+                security delete-generic-password -s \(shellQuote(svc)) -a <account>
+            """
+        case .replaceFailed(let svc, let acct, let st, let restored):
+            let text = (SecCopyErrorMessageString(st, nil) as String?) ?? ""
+            return """
+            switching the ACL mode of \(svc)/\(acct) failed: the old item was deleted but re-adding it failed \
+            (OSStatus \(st)\(text.isEmpty ? "" : ": \(text)")).
+              \(restored ? "The previous item was restored with its previous value and mode; nothing changed." : "The previous item could NOT be restored — \(svc)/\(acct) is now absent. Re-run `set` to store it again.")
             """
         }
     }
@@ -71,13 +110,17 @@ enum KeychainStore {
     /// What already lives at service/account, as seen through its decrypt ACL.
     enum Existing: Equatable {
         case none
-        /// Not created by this binary: a trusted-application list exists that
-        /// does not contain us, or an allow-all ACL that does not carry our
-        /// fingerprint, or no readable ACL at all (`owners` empty).
+        /// Not created (solely) by this binary: the decrypt ACL trusts some
+        /// application other than this binary's real path. `owners` lists every
+        /// trusted application found. Also used, with empty `owners`, for a
+        /// match that is not a file-keychain item (no readable ACL).
         case foreign(owners: [String])
-        /// Created by this binary. `daemonReadable` = the decrypt ACL also (or
-        /// only) carries an allow-all entry — the shape `--daemon` writes.
-        case own(daemonReadable: Bool)
+        /// The decrypt ACL trusts this binary's real path and nothing else.
+        case own
+        /// The decrypt ACL has only "allow all applications" entries — the
+        /// shape `--daemon` writes, but also `security add-generic-password -A`.
+        /// No owner identity exists for such items (labels are forgeable).
+        case allowAll
     }
 
     /// Public view of `inspect` without the item reference.
@@ -85,34 +128,53 @@ enum KeychainStore {
         try inspect(service: service, account: account).existing
     }
 
-    /// Refuse-before-typing check: throws exactly what `save` would throw for a
-    /// foreign or ambiguous item, without writing anything. `set-pair` runs it
-    /// for both accounts before the dialog so a refusal can never follow a
-    /// partial write (#5 verify R2).
+    /// Refuse-before-typing check: throws exactly the refusal `save` would throw
+    /// (foreign / unattributable / ambiguous), without writing anything.
+    /// `set` and `set-pair` run it for every account before the dialog, so a
+    /// refusal is never raised after a secret was typed or partially stored.
     static func preflight(service: String, accounts: [String], daemon: Bool) throws {
         for account in accounts {
-            if case .foreign(let owners) = try inspect(service: service, account: account).existing {
-                throw KeychainError.foreignOwned(service: service, account: account, owners: owners, selfPath: selfPath())
-            }
+            try refusal(for: try inspect(service: service, account: account).existing,
+                        service: service, account: account, daemon: daemon)
         }
     }
 
-    /// Write a value. Policy (decided in #5 after verify round 1):
+    /// The single place that decides which existing items `save` refuses.
+    private static func refusal(for existing: Existing, service: String, account: String, daemon: Bool) throws {
+        switch existing {
+        case .foreign(let owners):
+            throw KeychainError.foreignOwned(service: service, account: account, owners: owners, selfPath: selfPath())
+        case .allowAll where !daemon:
+            throw KeychainError.unattributable(service: service, account: account)
+        case .none, .own, .allowAll:
+            return
+        }
+    }
+
+    /// Write a value. Policy (decided in #5 after verify round 1, refined by
+    /// verify rounds 2–3):
     ///
-    ///   existing item                 set                     set --daemon
-    ///   absent                        Add                     Add + allow-all ACL
-    ///   foreign / unattributable      refuse + remedy         refuse + remedy
-    ///   own, same mode                value-only update       value-only update
-    ///   own, other mode               delete + Add (switch)   delete + Add (switch)
+    ///   existing item                         set                   set --daemon
+    ///   absent                                Add                   Add + allow-all ACL
+    ///   foreign (ACL trusts another app)      refuse + remedy       refuse + remedy
+    ///   own, prompt-on-read                   value-only update     delete + Add (switch)
+    ///   allow-all only (no owner identity)    refuse + remedy       value-only update
     ///
-    /// Why refuse foreign items instead of updating them (user decision on #5
-    /// after verify round 1): SecItemUpdate DOES succeed on an item another
-    /// program created, but that leaves the new secret inside an item that
-    /// program manages — and with --daemon it silently appended an allow-all
-    /// ACL entry to that item (round 1). Replacing it is a destructive act on
-    /// someone else's secret, so it must be an explicit `unset` by the user,
-    /// not a side effect of `set`. Note: such items are prompt-on-read for
-    /// other programs, not unreadable; the constraint is ownership.
+    /// Why refuse foreign items instead of updating them (user decision on #5):
+    /// SecItemUpdate DOES succeed on an item another program created, but that
+    /// leaves the new secret inside an item that program manages — and with
+    /// --daemon it silently appended an allow-all ACL entry to that item
+    /// (round 1). Replacing it is a destructive act on someone else's secret,
+    /// so it must be an explicit `unset` by the user, never a side effect of
+    /// `set`. Such items are prompt-on-read for other programs, not
+    /// unreadable; the constraint is ownership.
+    ///
+    /// Why allow-all items are never claimed as ours: an allow-all ACL entry has
+    /// no application list, and its description can be forged with one
+    /// `security add-generic-password -A -l` call (verify round 3). Updating
+    /// the value of such an item under --daemon exposes nothing new (it is
+    /// world-readable by construction); deleting it under plain `set` might
+    /// destroy another program's secret, so that is refused.
     ///
     /// API facts (probed 2026-09-10): SecItemDelete — by query or by
     /// kSecMatchItemList — answers errSecInvalidOwnerEdit (-25244) on an item
@@ -120,54 +182,69 @@ enum KeychainStore {
     /// SecKeychainItemDelete(ref) deletes it. `unset` uses the latter.
     ///
     /// Why delete+add for a mode switch on our own item: SecItemUpdate with
-    /// kSecAttrAccess unions ACL entries (5→7→9…), it never replaces them.
-    /// Delete by reference and Add recreates the item with a clean ACL.
+    /// kSecAttrAccess unions ACL entries (5→7→9…), it never replaces them. The
+    /// old value is read first and the old item re-added if the Add fails.
     static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
         let found = try inspect(service: service, account: account)
+        try refusal(for: found.existing, service: service, account: account, daemon: daemon)
         switch found.existing {
-        case .foreign(let owners):
-            throw KeychainError.foreignOwned(service: service, account: account, owners: owners, selfPath: selfPath())
-        case .own(let daemonReadable) where daemonReadable == daemon:
-            // Value-only update, bound to the very item we inspected. Never
-            // touch kSecAttrAccess on an existing item (ACL union, see above).
-            let q: [String: Any] = [
-                kSecClass as String: kSecClassGenericPassword,
-                kSecMatchItemList as String: [found.item!]
-            ]
-            let st = SecItemUpdate(q as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
-            guard st == errSecSuccess else { throw KeychainError.osStatus(st, operation: "set (update value)") }
-        case .own:
-            let st = SecKeychainItemDelete(found.item!)
-            guard st == errSecSuccess else {
-                // We classified it as ours yet cannot delete it: report it as
-                // foreign with the remedy rather than a bare status.
-                if st == errSecInvalidOwnerEdit {
-                    throw KeychainError.foreignOwned(service: service, account: account, owners: [], selfPath: selfPath())
-                }
-                throw KeychainError.osStatus(st, operation: "set (replace item to switch ACL mode)")
-            }
-            try add(service: service, account: account, value: value, daemon: daemon)
         case .none:
             try add(service: service, account: account, value: value, daemon: daemon)
+        case .own where !daemon, .allowAll:
+            // Value-only update, bound to the very item we inspected. Never
+            // touch kSecAttrAccess on an existing item (ACL union, see above).
+            try updateValue(of: found.item!, value: value)
+        case .own:
+            try replaceOwnItem(found.item!, service: service, account: account, value: value, daemon: daemon)
+        case .foreign:
+            preconditionFailure("refusal(for:) must have thrown")
+        }
+    }
+
+    private static func updateValue(of item: SecKeychainItem, value: String) throws {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item]]
+        let st = SecItemUpdate(q as CFDictionary, [kSecValueData as String: Data(value.utf8)] as CFDictionary)
+        guard st == errSecSuccess else { throw KeychainError.osStatus(st, operation: "set (update value)") }
+    }
+
+    /// Own prompt-on-read item → daemon-readable: delete by reference and re-add
+    /// with the allow-all access. Everything that can fail before the delete is
+    /// done first (read old value, build the SecAccess); if the Add still fails,
+    /// the old item is re-added so the secret is not lost.
+    private static func replaceOwnItem(_ item: SecKeychainItem, service: String, account: String, value: String, daemon: Bool) throws {
+        var oldData: CFTypeRef?
+        let rq: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item], kSecReturnData as String: true]
+        let rst = SecItemCopyMatching(rq as CFDictionary, &oldData)
+        guard rst == errSecSuccess, let old = oldData as? Data else { throw KeychainError.osStatus(rst, operation: "set (read current value before replacing)") }
+        let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
+        let dst = SecKeychainItemDelete(item)
+        guard dst == errSecSuccess else { throw KeychainError.osStatus(dst, operation: "set (delete own item to switch ACL mode)") }
+        let ast = addRaw(service: service, account: account, data: Data(value.utf8), access: access)
+        guard ast == errSecSuccess else {
+            let restored = addRaw(service: service, account: account, data: old, access: nil) == errSecSuccess
+            throw KeychainError.replaceFailed(service: service, account: account, addStatus: ast, restored: restored)
         }
     }
 
     private static func add(service: String, account: String, value: String, daemon: Bool) throws {
+        // Daemon-readable: any process may read without a keychain prompt.
+        // Use ONLY for low-sensitivity creds a headless launchd agent reads.
+        // Fail loudly if the access can't be built — never silently store a
+        // prompt-on-read item, which would hang the very daemon this serves.
+        let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
+        let st = addRaw(service: service, account: account, data: Data(value.utf8), access: access)
+        guard st == errSecSuccess else { throw KeychainError.osStatus(st, operation: "set (add)") }
+    }
+
+    private static func addRaw(service: String, account: String, data: Data, access: SecAccess?) -> OSStatus {
         var add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: Data(value.utf8)
+            kSecValueData as String: data
         ]
-        if daemon {
-            // Daemon-readable: any process may read without a keychain prompt.
-            // Use ONLY for low-sensitivity creds a headless launchd agent reads.
-            // Fail loudly if the access can't be built — never silently store a
-            // prompt-on-read item, which would hang the very daemon this serves.
-            add[kSecAttrAccess as String] = try allowAllAccess(label: daemonLabel(service: service, account: account))
-        }
-        let st = SecItemAdd(add as CFDictionary, nil)
-        guard st == errSecSuccess else { throw KeychainError.osStatus(st, operation: "set (add)") }
+        if let access = access { add[kSecAttrAccess as String] = access }
+        return SecItemAdd(add as CFDictionary, nil)
     }
 
     static func has(service: String, account: String) -> Bool {
@@ -182,10 +259,12 @@ enum KeychainStore {
 
     /// Delete one account, or every account under a service. Each matching item
     /// is deleted by reference (SecKeychainItemDelete), which — unlike the
-    /// query-based SecItemDelete the old loop used — also removes items created
-    /// by other programs, so `unset` is the remedy `set` names for them. Should
-    /// a delete still answer errSecInvalidOwnerEdit, the sweep continues and the
-    /// first such item is reported afterwards instead of stopping silently.
+    /// query-based SecItemDelete the old loop used (it threw at the first
+    /// -25244 and left the rest) — also removes items created by other
+    /// programs, so `unset` is the remedy `set` names for them. Nothing is
+    /// skipped in silence: a match that is not a file-keychain item, or a delete
+    /// the keychain refuses, is reported after the sweep with the `security`
+    /// remedy, together with how many items were removed.
     static func unset(service: String, account: String? = nil) throws {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -201,26 +280,24 @@ enum KeychainStore {
         guard st == errSecSuccess, let rows = out as? [[String: Any]] else {
             throw KeychainError.osStatus(st, operation: "unset (list items)")
         }
-        var firstForeign: (account: String, owners: [String])?
+        var deleted = 0
+        var refused: [(account: String, reason: String)] = []
         for row in rows {
-            guard let ref = row[kSecValueRef as String], CFGetTypeID(ref as CFTypeRef) == SecKeychainItemGetTypeID() else { continue }
-            let item = ref as! SecKeychainItem
             let acct = row[kSecAttrAccount as String] as? String ?? account ?? "?"
-            let del = SecKeychainItemDelete(item)
+            guard let ref = row[kSecValueRef as String], CFGetTypeID(ref as CFTypeRef) == SecKeychainItemGetTypeID() else {
+                refused.append((acct, "not a file-keychain item (no item reference); che-keychain cannot delete it"))
+                continue
+            }
+            let del = SecKeychainItemDelete(ref as! SecKeychainItem)
             switch del {
-            case errSecSuccess: continue
-            case errSecInvalidOwnerEdit:
-                if firstForeign == nil {
-                    let owners = (try? classify(item: item, service: service, account: acct)).flatMap { e -> [String]? in
-                        if case .foreign(let o) = e { return o } else { return nil }
-                    } ?? []
-                    firstForeign = (acct, owners)
-                }
-            default: throw KeychainError.osStatus(del, operation: "unset (delete \(service)/\(acct))")
+            case errSecSuccess: deleted += 1
+            default:
+                let text = (SecCopyErrorMessageString(del, nil) as String?) ?? ""
+                refused.append((acct, "OSStatus \(del)\(text.isEmpty ? "" : " (\(text))")"))
             }
         }
-        if let f = firstForeign {
-            throw KeychainError.foreignOwned(service: service, account: f.account, owners: f.owners, selfPath: selfPath())
+        if !refused.isEmpty {
+            throw KeychainError.undeletable(service: service, deleted: deleted, refused: refused)
         }
     }
 
@@ -242,6 +319,7 @@ enum KeychainStore {
         guard st == errSecSuccess, let refs = out as? [AnyObject] else {
             throw KeychainError.osStatus(st, operation: "set (look up existing item)")
         }
+        if refs.isEmpty { return Found(existing: .none, item: nil) }
         guard refs.count == 1 else {
             throw KeychainError.ambiguous(service: service, account: account, count: refs.count)
         }
@@ -255,11 +333,14 @@ enum KeychainStore {
     }
 
     /// Decide ownership from the decrypt ACL, fail-closed:
-    ///  1. any trusted-application list that does not contain this binary → foreign
-    ///  2. a list containing this binary → own (daemonReadable if an allow-all entry coexists)
-    ///  3. only allow-all entries → own only if one carries our label
-    ///     "service/account" (what `--daemon` writes); otherwise foreign
-    ///  4. no readable decrypt ACL → foreign with empty owners (unattributable)
+    ///  1. every trusted application in every decrypt entry must be this binary
+    ///     (real path); any other application → foreign (all of them reported).
+    ///     Note `security -T a -T b` puts both apps in ONE entry, so "each list
+    ///     contains us" would still pass — the rule is over applications.
+    ///  2. no trusted-application list at all (only allow-all entries) → allowAll
+    ///     (no owner identity; never claimed as ours)
+    ///  3. an ACL entry that cannot be read or decoded → thrown OSStatus (the
+    ///     caller refuses; nothing is written)
     private static func classify(item: SecKeychainItem, service: String, account: String) throws -> Existing {
         var access: SecAccess?
         let ast = SecKeychainItemCopyAccess(item, &access)
@@ -267,45 +348,34 @@ enum KeychainStore {
             throw KeychainError.osStatus(ast, operation: "set (read item ACL)")
         }
         let acls = (SecAccessCopyMatchingACLList(acc, kSecACLAuthorizationDecrypt) as? [SecACL]) ?? []
-        var lists: [[String]] = []
-        var allowAllDescriptions: [String] = []
+        var lists: [[String]] = []   // raw paths, compared unsanitized
         for acl in acls {
             var apps: CFArray?; var desc: CFString?; var sel = SecKeychainPromptSelector(rawValue: 0)
             let cst = SecACLCopyContents(acl, &apps, &desc, &sel)
             guard cst == errSecSuccess else { throw KeychainError.osStatus(cst, operation: "set (read decrypt ACL entry)") }
-            guard let appsArray = apps else {
-                // nil application list = any application (allow-all).
-                allowAllDescriptions.append(sanitize((desc as String?) ?? ""))
-                continue
-            }
+            guard let appsArray = apps else { continue }   // nil application list = any application
             guard let list = appsArray as? [SecTrustedApplication] else {
                 throw KeychainError.osStatus(errSecDecode, operation: "set (decode trusted-application list)")
             }
             lists.append(list.compactMap(trustedApplicationPath))
         }
+        if lists.isEmpty { return .allowAll }
         let me = selfPath()
-        if !lists.isEmpty {
-            let trustsMe = lists.contains { $0.contains { realpath($0) == me } }
-            guard trustsMe else { return .foreign(owners: lists.flatMap { $0 }) }
-            return .own(daemonReadable: !allowAllDescriptions.isEmpty)
-        }
-        if allowAllDescriptions.contains(daemonLabel(service: service, account: account)) {
-            return .own(daemonReadable: true)
-        }
-        return .foreign(owners: allowAllDescriptions.map { "any application (allow-all ACL, description \"\($0)\")" })
+        let apps = lists.flatMap { $0 }
+        let onlyMe = !apps.isEmpty && apps.allSatisfy { realpath($0) == me }
+        return onlyMe ? .own : .foreign(owners: apps.map(sanitize))
     }
 
-    /// The ACL description we stamp on daemon items; doubles as the ownership
-    /// fingerprint for allow-all entries, which carry no application list.
+    /// The ACL description we stamp on daemon items (display only — it is NOT
+    /// an ownership fingerprint: any program can write the same string).
     private static func daemonLabel(service: String, account: String) -> String { "\(service)/\(account)" }
 
     /// SecTrustedApplicationCopyData returns the application's path as a
-    /// NUL-terminated C string. Anything else is rendered unreadable on purpose.
+    /// NUL-terminated C string. Returned raw; sanitize only when displaying.
     private static func trustedApplicationPath(_ app: SecTrustedApplication) -> String? {
         var data: CFData?
         guard SecTrustedApplicationCopyData(app, &data) == errSecSuccess, let d = data as Data? else { return nil }
-        let bytes = d.prefix { $0 != 0 }
-        return sanitize(String(decoding: bytes, as: UTF8.self))
+        return String(decoding: d.prefix { $0 != 0 }, as: UTF8.self)
     }
 
     /// Strings read from the keychain are written by other programs: strip
