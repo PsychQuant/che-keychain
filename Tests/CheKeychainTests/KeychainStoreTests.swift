@@ -279,6 +279,49 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(KeychainStore.has(service: service, account: "theirs2"))
     }
 
+    // MARK: - Read-back verification (#6)
+
+    func testSaveRejectsEmptyValue() throws {
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "e", value: "")) { err in
+            guard case KeychainError.emptyValue = err else { return XCTFail("expected .emptyValue, got \(err)") }
+        }
+        XCTAssertFalse(KeychainStore.has(service: service, account: "e"), "an empty value must never create an item")
+        // The same guard protects the daemon path.
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "e", value: "", daemon: true))
+        XCTAssertFalse(KeychainStore.has(service: service, account: "e"))
+    }
+
+    func testSaveVerifiesStoredValueAndDeletesOnMismatch() throws {
+        defer { KeychainStore.readBackOverride = nil }
+        // Simulate the three ways a read-back can disagree with what was written.
+        let cases: [(String, Data?)] = [("unreadable", nil), ("empty", Data()), ("differs", Data("other".utf8))]
+        for (name, fake) in cases {
+            KeychainStore.readBackOverride = { _, _ in fake }
+            XCTAssertThrowsError(try KeychainStore.save(service: service, account: name, value: "v")) { err in
+                guard case KeychainError.storedValueMismatch(_, let acct, let reason) = err else {
+                    return XCTFail("\(name): expected .storedValueMismatch, got \(err)")
+                }
+                XCTAssertEqual(acct, name)
+                XCTAssertEqual(reason, name)
+            }
+            XCTAssertFalse(KeychainStore.has(service: service, account: name), "\(name): the unverified item must be removed")
+        }
+        // And the replace path (own item) is verified too.
+        KeychainStore.readBackOverride = nil
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        KeychainStore.readBackOverride = { _, _ in Data("garbage".utf8) }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2"))
+        XCTAssertFalse(KeychainStore.has(service: service, account: "own"))
+    }
+
+    func testSaveReadsBackWhatItWroteInBothModes() throws {
+        // No override: the real read-back must agree, for prompt-on-read and allow-all items.
+        try KeychainStore.save(service: service, account: "p", value: "plain-value")
+        XCTAssertEqual(try readOwn(account: "p"), "plain-value")
+        try KeychainStore.save(service: service, account: "d", value: "daemon-value", daemon: true)
+        XCTAssertEqual(try readOwn(account: "d"), "daemon-value")
+    }
+
     // MARK: - Failure-path messages (pure string logic, no keychain)
 
     func testUndeletableMessageNamesEveryRefusedItemHonestly() {

@@ -31,6 +31,14 @@ enum KeychainError: Error, LocalizedError {
     /// A mode switch (delete + re-add) failed after the delete; the original
     /// item was restored (or not — `restored` says which).
     case replaceFailed(service: String, account: String, addStatus: OSStatus, restored: Bool)
+    /// Refused to store an empty value (#6): an empty item blocks later writes
+    /// and is exactly the silent failure `security add-generic-password` has
+    /// from a non-tty.
+    case emptyValue(service: String, account: String)
+    /// The value read back right after the write was not the value written
+    /// (`reason`: unreadable / empty / differs). The item was deleted again so
+    /// no unverified item is left behind (#6).
+    case storedValueMismatch(service: String, account: String, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -115,6 +123,20 @@ enum KeychainError: Error, LocalizedError {
             return """
             unset \(sanitize(svc)): \(done); \(refused.count) match(es) could not be removed by che-keychain:
             \(list)
+            """
+        case .emptyValue(let svc, let acct):
+            return "refusing to store an empty value for \(svc)/\(acct) — nothing was written."
+        case .storedValueMismatch(let svc, let acct, let reason):
+            let what: String
+            switch reason {
+            case "unreadable": what = "the value could not be read back after writing"
+            case "empty":      what = "the stored value read back empty"
+            default:           what = "the stored value read back differs from what was written"
+            }
+            return """
+            stored value mismatch for \(svc)/\(acct): \(what).
+              The item was removed again so no unverified item is left behind. Nothing usable was stored; retry, \
+            and if it persists report it with the OSStatus output of `che-keychain has`.
             """
         case .replaceFailed(let svc, let acct, let st, let restored):
             let text = (SecCopyErrorMessageString(st, nil) as String?) ?? ""
@@ -239,6 +261,7 @@ enum KeychainStore {
     /// SecKeychainItemDelete(ref) deletes it. SecItemUpdate with kSecAttrAccess
     /// unions ACL entries (5→7→9…), it never replaces them.
     static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
+        guard !value.isEmpty else { throw KeychainError.emptyValue(service: service, account: account) }
         let found = try inspect(service: service, account: account)
         try refusal(for: found.existing, service: service, account: account)
         switch found.existing {
@@ -249,6 +272,50 @@ enum KeychainStore {
         case .foreign, .allowAll, .unsupported:
             preconditionFailure("refusal(for:) must have thrown")
         }
+        try verifyStored(service: service, account: account, expected: Data(value.utf8))
+    }
+
+    /// Test seam (#6): replaces the real read-back so tests can simulate a
+    /// keychain that returns nothing / empty / a different value. nil = real.
+    static var readBackOverride: ((String, String) -> Data?)?
+
+    /// Read the value of the item this binary just wrote. Interaction is
+    /// disabled: our own items decrypt without a prompt, and a prompt here
+    /// would hang a headless caller — a failed read is a verification failure.
+    private static func readBack(service: String, account: String) -> Data? {
+        if let o = readBackOverride { return o(service, account) }
+        var wasAllowed: DarwinBoolean = true
+        _ = SecKeychainGetUserInteractionAllowed(&wasAllowed)
+        _ = SecKeychainSetUserInteractionAllowed(false)
+        defer { _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) }
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? Data
+    }
+
+    /// Post-write verification (#6): the stored value must read back non-empty
+    /// and byte-identical. Otherwise the item is deleted again (by reference,
+    /// through the same lookup `unset` uses) and the mismatch is reported, so a
+    /// silent "stored an empty/garbled value" can never happen on this path.
+    private static func verifyStored(service: String, account: String, expected: Data) throws {
+        let got = readBack(service: service, account: account)
+        let reason: String?
+        switch got {
+        case nil:                       reason = "unreadable"
+        case let d? where d.isEmpty:    reason = "empty"
+        case let d? where d != expected: reason = "differs"
+        default:                        reason = nil
+        }
+        guard let why = reason else { return }
+        _ = try? unset(service: service, account: account)
+        throw KeychainError.storedValueMismatch(service: service, account: account, reason: why)
     }
 
     /// Own item → delete by reference and re-add with the requested access.
