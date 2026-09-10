@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `set` / `set-pair` no longer fail with `errSecDuplicateItem` (-25299) on an existing item. The behaviour now depends on who owns it (#5):
+  - **Ours, same ACL mode** → value-only `SecItemUpdate` (a real overwrite).
+  - **Created by another program** (e.g. the `security` CLI) → **refused**, printing the exact `security delete-generic-password -s S -a A` command to run first. Rationale: `SecItemDelete` on such an item returns `errSecInvalidOwnerEdit` (-25244), and `SecItemUpdate` would "succeed" while leaving the value readable only by the original owner — a fake success. With `--daemon` it would additionally append an allow-all ACL to an item we don't own.
+  - **Ours, but the other mode** (`--daemon` on a prompt-on-read item, or vice versa) → refused with `che-keychain unset` as the remedy; `SecItemUpdate` unions ACL entries instead of replacing them, so the mode cannot be flipped in place.
+- `-25244` error hint corrected: it now says the item belongs to another program and names the `security delete-generic-password` remedy (the old text wrongly claimed the ACL could not be changed).
+
 ## [0.2.0] — 2026-06-09
 
 First release since 0.1.0. Both changes below were merged to `main` (PR #2 on 2026-05-29, PR #3 on 2026-06-09) and the source `Version.swift` was bumped to 0.2.0, but no release was ever cut — so every installed `~/bin/che-keychain` was still the 0.1.0 binary, missing both. This release ships them.

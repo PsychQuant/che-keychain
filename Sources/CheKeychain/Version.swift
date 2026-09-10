@@ -20,8 +20,11 @@ enum AppVersion {
       che-keychain --help
 
     DETAILS
-      `set` / `set-pair` overwrite an existing item in place (upsert) — including
-      items created by other programs such as the `security` CLI.
+      `set` / `set-pair` update an existing item in place only when it is ours and
+      its ACL matches the requested mode. An item created by another program (e.g.
+      the `security` CLI) is REFUSED with the exact `security delete-generic-password`
+      command to run first — such items stay unreadable to our consumers anyway.
+      Switching an item between normal and --daemon requires `unset` then `set`.
 
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't
