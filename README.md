@@ -56,7 +56,7 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 |------|----------------------|
 | Caller invokes `che-keychain set --service X --account Y --secure` | exit code, stderr message |
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
-| Binary calls `SecItemAdd` / `SecItemUpdate` to write to `login.keychain-db`; an item whose decrypt ACL trusts any other application, or an allow-all item under plain `set`, is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
+| Binary calls `SecItemAdd` / `SecItemUpdate` to write to `login.keychain-db`; an existing item is re-created only if its decrypt ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
 
 Key properties:

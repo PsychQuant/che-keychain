@@ -123,14 +123,17 @@ case .has(let service, let account):
     }
 
 case .unset(let service, let account):
+    let removed: [String]
     do {
-        try KeychainStore.unset(service: service, account: account)
+        removed = try KeychainStore.unset(service: service, account: account)
     } catch {
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
-    if let a = account {
-        emit("✓ removed \(service)/\(a)")
+    if removed.isEmpty {
+        emit("nothing to remove under \(service)\(account.map { "/\($0)" } ?? "")")
     } else {
-        emit("✓ removed all accounts under \(service)")
+        // Removed items may have been created by other programs (that is what
+        // `set`'s refusal sends the user here for), so say exactly what went.
+        emit("✓ removed \(removed.count) account(s) under \(service): \(removed.map(sanitize).joined(separator: ", "))")
     }
 }

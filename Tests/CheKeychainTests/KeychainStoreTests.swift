@@ -58,8 +58,8 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(KeychainStore.has(service: service, account: "b"))
     }
 
-    func testUnsetMissingIsNotError() {
-        XCTAssertNoThrow(try KeychainStore.unset(service: service, account: "never-existed"))
+    func testUnsetMissingIsNotError() throws {
+        XCTAssertEqual(try KeychainStore.unset(service: service, account: "never-existed"), [])
     }
 
     // MARK: - Foreign-owned items (#5)
@@ -142,27 +142,62 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
-    func testAllowAllItemsAreNeverClaimedAsOwn() throws {
+    func testAllowAllItemsAreRefusedInBothModes() throws {
         // `security add-generic-password -A` — allow-all decrypt ACL. Such items
         // carry no owner identity and any label can be forged (`-l 'S/A'` was the
-        // round-3 bypass), so plain `set` refuses; `set --daemon` may update the
-        // value in place because the item is world-readable by construction.
+        // round-3 bypass), so both `set` and `set --daemon` refuse and name `unset`.
         try seedForeignItem(account: "open", value: "stale", allowAll: true)
         try seedForeignItem(account: "forged", value: "stale", allowAll: true, label: "\(service)/forged")
         for acct in ["open", "forged"] {
             XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: acct), .allowAll)
-            XCTAssertThrowsError(try KeychainStore.save(service: service, account: acct, value: "fresh")) { err in
-                guard case KeychainError.unattributable = err else { return XCTFail("\(acct): expected .unattributable, got \(err)") }
+            for daemon in [false, true] {
+                XCTAssertThrowsError(try KeychainStore.save(service: service, account: acct, value: "fresh", daemon: daemon)) { err in
+                    guard case KeychainError.unattributable = err else { return XCTFail("\(acct) daemon=\(daemon): expected .unattributable, got \(err)") }
+                    let msg = (err as? LocalizedError)?.errorDescription ?? ""
+                    XCTAssertTrue(msg.contains("che-keychain unset --service '\(service)' --account '\(acct)'"), msg)
+                }
+                XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: [acct], daemon: daemon))
             }
-            XCTAssertEqual(try readForeign(account: acct), "stale", "plain set must not touch \(acct)")
-            XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: [acct], daemon: false)) { err in
-                guard case KeychainError.unattributable = err else { return XCTFail("preflight \(acct): got \(err)") }
-            }
-            XCTAssertNoThrow(try KeychainStore.preflight(service: service, accounts: [acct], daemon: true))
-            try KeychainStore.save(service: service, account: acct, value: "fresh", daemon: true)
-            XCTAssertEqual(try readForeign(account: acct), "fresh")
-            XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: acct), .allowAll, "value update must not touch the ACL")
+            XCTAssertEqual(try readForeign(account: acct), "stale", "nothing may touch \(acct)")
         }
+    }
+
+    func testMixedACLWithAllowAllEntryIsNotOwn() throws {
+        // Our own item whose decrypt ACL later gained an allow-all entry (what the
+        // round-1 build did via SecItemUpdate + kSecAttrAccess union). Round 4
+        // dropped such entries and judged the item .own; it must be .allowAll.
+        try KeychainStore.save(service: service, account: "mixed", value: "v1")
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("x" as CFString, nil, &access), errSecSuccess)
+        var acls: CFArray?
+        XCTAssertEqual(SecAccessCopyACLList(access!, &acls), errSecSuccess)
+        for acl in acls as! [SecACL] { _ = SecACLSetContents(acl, nil, "x" as CFString, SecKeychainPromptSelector(rawValue: 0)) }
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "mixed"]
+        XCTAssertEqual(SecItemUpdate(q as CFDictionary, [kSecAttrAccess as String: access!] as CFDictionary), errSecSuccess)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "mixed"), .allowAll)
+        for daemon in [false, true] {
+            XCTAssertThrowsError(try KeychainStore.save(service: service, account: "mixed", value: "v2", daemon: daemon)) { err in
+                guard case KeychainError.unattributable = err else { return XCTFail("daemon=\(daemon): got \(err)") }
+            }
+        }
+        XCTAssertEqual(try readOwn(account: "mixed"), "v1")
+    }
+
+    func testPrePlantedItemTrustingOnlyUsIsReplacedNotUpdated() throws {
+        // Another program can create an item whose decrypt list names only this
+        // binary while keeping the owner (ChangeACL) entry for itself. Updating
+        // it in place would hand that program the new secret later; `set` must
+        // re-create the item so the ACL is ours from scratch.
+        let me = URL(fileURLWithPath: Bundle.main.executablePath!).resolvingSymlinksInPath().path
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["add-generic-password", "-s", service, "-a", "planted", "-w", "stale", "-T", me]
+        try p.run(); p.waitUntilExit(); XCTAssertEqual(p.terminationStatus, 0)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "planted"), .own)
+        try KeychainStore.save(service: service, account: "planted", value: "fresh")
+        XCTAssertEqual(try readOwn(account: "planted"), "fresh")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "planted"), .own)
+        // The re-created item is deletable by our own delete path (fresh ACL).
+        XCTAssertEqual(try KeychainStore.unset(service: service, account: "planted"), ["planted"])
     }
 
     func testCoTrustedItemIsForeign() throws {
@@ -204,8 +239,15 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try readOwn(account: "d"), "high")
     }
 
-    func testSaveDaemonUpdatesExistingDaemonItemValue() throws {
+    func testSaveDaemonRefusesExistingDaemonItemAndNamesUnset() throws {
+        // Our own daemon item is allow-all and therefore indistinguishable from
+        // anyone else's: re-setting it is `unset` then `set --daemon`.
         try KeychainStore.save(service: service, account: "d", value: "v1", daemon: true)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)) { err in
+            guard case KeychainError.unattributable = err else { return XCTFail("expected .unattributable, got \(err)") }
+        }
+        XCTAssertEqual(try readOwn(account: "d"), "v1")
+        XCTAssertEqual(try KeychainStore.unset(service: service, account: "d"), ["d"])
         try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)
         XCTAssertEqual(try readOwn(account: "d"), "v2", "the headline requirement: the value really changed")
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
@@ -228,7 +270,7 @@ final class KeychainStoreTests: XCTestCase {
         // is therefore the remedy `set` names for a foreign item.
         try KeychainStore.save(service: service, account: "mine", value: "x")
         try seedForeignItem(account: "theirs", value: "y")
-        try KeychainStore.unset(service: service)
+        XCTAssertEqual(Set(try KeychainStore.unset(service: service)), ["mine", "theirs"])
         XCTAssertFalse(KeychainStore.has(service: service, account: "mine"))
         XCTAssertFalse(KeychainStore.has(service: service, account: "theirs"))
         // and the single-account form on a foreign item alone
