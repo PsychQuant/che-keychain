@@ -10,7 +10,7 @@ Every CLI / MCP that needs to store an API key or password has a UX problem:
 - Asking the LLM to handle the value: the secret lands in the conversation transcript
 - Custom getpass per tool: every tool re-implements the same prompt, none of them are shared / trusted
 
-`che-keychain` is one signed binary that owns the input UI. Callers invoke it; it pops a native NSAlert; the user types; the value is written to keychain via `SecItemAdd` (or `SecItemUpdate` / delete-and-re-add when the item already exists and this binary created it). The caller's process never sees the typed string — they get an exit code.
+`che-keychain` is one signed binary that owns the input UI. Callers invoke it; it pops a native NSAlert; the user types; the value is written to keychain via `SecItemAdd` (an existing item that this binary alone is trusted for is deleted by reference and re-added; nothing is ever updated in place). The caller's process never sees the typed string — they get an exit code.
 
 ## Install
 
@@ -56,7 +56,7 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 |------|----------------------|
 | Caller invokes `che-keychain set --service X --account Y --secure` | exit code, stderr message |
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
-| Binary calls `SecItemAdd` / `SecItemUpdate` to write to `login.keychain-db`; an existing item is re-created only if its decrypt ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
+| Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
 
 Key properties:

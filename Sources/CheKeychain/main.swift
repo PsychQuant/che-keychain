@@ -46,7 +46,7 @@ case .set(let a):
     // Refuse before the user types anything: a foreign/ambiguous item cannot be
     // written to, so the dialog would only collect a secret to throw away.
     do {
-        try KeychainStore.preflight(service: a.service, accounts: [a.account], daemon: a.daemon)
+        try KeychainStore.preflight(service: a.service, accounts: [a.account])
     } catch {
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
@@ -75,10 +75,11 @@ case .set(let a):
     }
 
 case .setPair(let a):
-    // Both accounts are checked before the dialog so a refusal on the second
-    // can never follow a write of the first (no half-stored credential pair).
+    // Both accounts are checked before the dialog so a *refusal* on the second
+    // cannot follow a write of the first. A non-refusal failure on the second
+    // write is still possible; it is reported together with what was written.
     do {
-        try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount], daemon: false)
+        try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount])
     } catch {
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
@@ -108,9 +109,14 @@ case .setPair(let a):
         }
         do {
             try KeychainStore.save(service: a.service, account: a.visibleAccount, value: v)
-            try KeychainStore.save(service: a.service, account: a.secureAccount,  value: s)
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+        do {
+            try KeychainStore.save(service: a.service, account: a.secureAccount,  value: s)
+        } catch {
+            let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            die(msg + "\n  Note: \(a.service)/\(a.visibleAccount) WAS stored before this failure; the pair is now inconsistent until you re-run set-pair.")
         }
         emit("✓ stored \(a.service)/{\(a.visibleAccount), \(a.secureAccount)}")
     }

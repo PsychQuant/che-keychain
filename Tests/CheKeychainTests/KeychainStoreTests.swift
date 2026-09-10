@@ -156,8 +156,8 @@ final class KeychainStoreTests: XCTestCase {
                     let msg = (err as? LocalizedError)?.errorDescription ?? ""
                     XCTAssertTrue(msg.contains("che-keychain unset --service '\(service)' --account '\(acct)'"), msg)
                 }
-                XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: [acct], daemon: daemon))
             }
+            XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: [acct]))
             XCTAssertEqual(try readForeign(account: acct), "stale", "nothing may touch \(acct)")
         }
     }
@@ -256,12 +256,12 @@ final class KeychainStoreTests: XCTestCase {
     func testPreflightRefusesBeforeAnythingIsWritten() throws {
         // set-pair must refuse up front, not after the first account has landed.
         try seedForeignItem(account: "pass", value: "stale")
-        XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: ["user", "pass"], daemon: false)) { err in
+        XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: ["user", "pass"])) { err in
             guard case KeychainError.foreignOwned(_, let acct, _, _) = err else { return XCTFail("expected .foreignOwned, got \(err)") }
             XCTAssertEqual(acct, "pass")
         }
         XCTAssertFalse(KeychainStore.has(service: service, account: "user"), "preflight must not write")
-        XCTAssertNoThrow(try KeychainStore.preflight(service: service, accounts: ["user", "other"], daemon: false))
+        XCTAssertNoThrow(try KeychainStore.preflight(service: service, accounts: ["user", "other"]))
     }
 
     func testUnsetRemovesItemsCreatedByOtherProgramsToo() throws {

@@ -2,7 +2,7 @@
 import Foundation
 
 enum AppVersion {
-    static let version = "0.2.0"
+    static let version = "0.3.0"
     static let versionString = "che-keychain \(version)"
     static let helpMessage = """
     \(versionString)
@@ -60,5 +60,10 @@ enum AppVersion {
 
       # Daemon-readable secret (launchd agent reads it without a prompt)
       che-keychain set --service bus-eta-logger --account tdx_secret --secure --daemon
+
+      # Rotate a daemon-readable secret (0.3.0+: an existing allow-all item is
+      # never overwritten in place — remove it explicitly first)
+      che-keychain unset --service bus-eta-logger --account tdx_secret
+      che-keychain set   --service bus-eta-logger --account tdx_secret --secure --daemon
     """
 }

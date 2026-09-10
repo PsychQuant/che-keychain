@@ -27,7 +27,7 @@ enum KeychainError: Error, LocalizedError {
     /// `unset` deleted `deleted` account(s) but could not delete `refused`
     /// (account → why). Reported after the sweep so the user sees exactly what
     /// remains; the remedy is the `security` CLI, not `unset` again.
-    case undeletable(service: String, deleted: [String], refused: [(account: String, reason: String)])
+    case undeletable(service: String, deleted: [String], refused: [(account: String, reason: String, fileKeychain: Bool)])
     /// A mode switch (delete + re-add) failed after the delete; the original
     /// item was restored (or not — `restored` says which).
     case replaceFailed(service: String, account: String, addStatus: OSStatus, restored: Bool)
@@ -59,7 +59,8 @@ enum KeychainError: Error, LocalizedError {
             binary alone; anything else may belong to another program, and replacing it would destroy that program's secret.
               If nothing else needs it — this permanently deletes the stored secret — remove it explicitly, then retry:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
-              (equivalent: security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct)))
+              (`unset` removes every match, including an iCloud-synchronized twin; `security delete-generic-password \
+            -s \(shellQuote(svc)) -a \(shellQuote(acct))` removes one local match per call.)
               If it was created by another copy of che-keychain (different install path), use that copy instead. \
             If you added another application via "Always Allow", the same `unset` then `set` re-creates it trusted to this binary only.
             """
@@ -71,11 +72,13 @@ enum KeychainError: Error, LocalizedError {
             """
         case .ambiguous(let svc, let acct, let n):
             return """
-            \(n) keychain items match \(svc)/\(acct) (e.g. one per keychain in the search list). \
+            \(n) keychain items match \(svc)/\(acct) (e.g. one per keychain in the search list, or an iCloud-synchronized twin). \
             Refusing to guess which one to write.
               Inspect them with:  security find-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
-              To remove ALL of them:  che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
-              To remove one at a time (each call deletes the first match):  security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
+              To remove them:  che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
+                (removes every match it can, including an iCloud twin on all your devices, and reports any it cannot)
+              To remove one local match per call:  security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
+              A twin that neither can remove lives in the iCloud / data-protection keychain: remove it in Keychain Access.
             """
         case .unattributable(let svc, let acct):
             return """
@@ -87,19 +90,26 @@ enum KeychainError: Error, LocalizedError {
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
             """
         case .undeletable(let svc, let deleted, let refused):
-            let list = refused.map { "    \(sanitize($0.account)): \($0.reason)\n      security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(sanitize($0.account)))" }.joined(separator: "\n")
+            // The remedy command carries the RAW account (only shell-quoted): a
+            // sanitized copy could name a different item. `sanitize` is display-only.
+            let list = refused.map { r -> String in
+                let head = "    \(r.account.isEmpty ? "(account attribute missing)" : sanitize(r.account)): \(r.reason)"
+                if r.fileKeychain && !r.account.isEmpty {
+                    return head + "\n      security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(r.account))   # deletes the first local match"
+                }
+                return head + "\n      → remove it in Keychain Access (it is not a file-keychain item; `security` cannot see it either)"
+            }.joined(separator: "\n")
             let done = deleted.isEmpty ? "removed nothing" : "removed \(deleted.count) account(s): \(deleted.map(sanitize).joined(separator: ", "))"
             return """
-            unset --service \(svc): \(done); \(refused.count) could not be removed by che-keychain:
+            unset \(sanitize(svc)): \(done); \(refused.count) match(es) could not be removed by che-keychain:
             \(list)
-              (each `security delete-generic-password` call deletes the first match for that account)
             """
         case .replaceFailed(let svc, let acct, let st, let restored):
             let text = (SecCopyErrorMessageString(st, nil) as String?) ?? ""
             return """
             replacing \(svc)/\(acct) failed: the old item was deleted but adding the new one failed \
             (OSStatus \(st)\(text.isEmpty ? "" : ": \(text)")).
-              \(restored ? "The previous value was re-stored as a prompt-on-read item trusted to this binary; other item attributes (label, dates) were not preserved." : "The previous item could NOT be restored — \(svc)/\(acct) is now absent. Re-run `set` to store it again.")
+              \(restored ? "The previous value was re-stored as a prompt-on-read item trusted to this binary; other item attributes (label, dates) were not preserved." : "The previous item could NOT be restored — \(svc)/\(acct) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again.")
             """
         }
     }
@@ -108,8 +118,12 @@ enum KeychainError: Error, LocalizedError {
 /// Strings read from the keychain are written by other programs: strip
 /// control characters before they reach a terminal, and cap the length.
 func sanitize(_ s: String) -> String {
-    let cleaned = s.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }
-    return String(String.UnicodeScalarView(cleaned).prefix(256))
+    let cleaned = s.unicodeScalars.filter { u in
+        let cat = u.properties.generalCategory
+        return u.value >= 0x20 && u.value != 0x7f && cat != .control && cat != .format
+    }
+    let capped = String(String.UnicodeScalarView(cleaned).prefix(256))
+    return cleaned.count > 256 ? capped + "…" : capped
 }
 
 /// Single-quote a value for copy-paste into a POSIX shell. The remedy lines above
@@ -127,10 +141,10 @@ enum KeychainStore {
     /// What already lives at service/account, as seen through its decrypt ACL.
     enum Existing: Equatable {
         case none
-        /// Not created (solely) by this binary: the decrypt ACL trusts some
-        /// application other than this binary's real path. `owners` lists every
-        /// trusted application found. Also used, with empty `owners`, for a
-        /// match that is not a file-keychain item (no readable ACL).
+        /// Not created (solely) by this binary: some ACL entry that can reveal
+        /// the secret (decrypt / any / export) trusts an application other than
+        /// this binary's real path. `owners` lists every trusted application
+        /// found; empty when no such entry names any application at all.
         case foreign(owners: [String])
         /// Every decrypt entry names applications, and every one of them is
         /// this binary's real path.
@@ -153,15 +167,16 @@ enum KeychainStore {
     /// (foreign / unattributable / ambiguous), without writing anything.
     /// `set` and `set-pair` run it for every account before the dialog, so a
     /// refusal is never raised after a secret was typed or partially stored.
-    static func preflight(service: String, accounts: [String], daemon: Bool) throws {
+    static func preflight(service: String, accounts: [String]) throws {
         for account in accounts {
-            try refusal(for: try inspect(service: service, account: account).existing,
-                        service: service, account: account, daemon: daemon)
+            try refusal(for: try inspect(service: service, account: account).existing, service: service, account: account)
         }
     }
 
-    /// The single place that decides which existing items `save` refuses.
-    private static func refusal(for existing: Existing, service: String, account: String, daemon: Bool) throws {
+    /// The single place that decides which existing items `save` refuses. The
+    /// refusal set is deliberately identical for `set` and `set --daemon` —
+    /// round 1 of #5 regressed precisely by making it mode-dependent.
+    private static func refusal(for existing: Existing, service: String, account: String) throws {
         switch existing {
         case .foreign(let owners):
             throw KeychainError.foreignOwned(service: service, account: account, owners: owners, selfPath: try selfPath())
@@ -209,7 +224,7 @@ enum KeychainStore {
     /// unions ACL entries (5→7→9…), it never replaces them.
     static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
         let found = try inspect(service: service, account: account)
-        try refusal(for: found.existing, service: service, account: account, daemon: daemon)
+        try refusal(for: found.existing, service: service, account: account)
         switch found.existing {
         case .none:
             try add(service: service, account: account, value: value, daemon: daemon)
@@ -228,10 +243,12 @@ enum KeychainStore {
         var oldData: CFTypeRef?
         let rq: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item], kSecReturnData as String: true]
         let rst = SecItemCopyMatching(rq as CFDictionary, &oldData)
-        guard rst == errSecSuccess, let old = oldData as? Data else { throw KeychainError.osStatus(rst, operation: "set (read current value before replacing)") }
+        guard rst == errSecSuccess else { throw KeychainError.osStatus(rst, operation: "set (read current value before replacing)") }
+        guard var old = oldData as? Data else { throw KeychainError.osStatus(errSecDecode, operation: "set (decode current value before replacing)") }
+        defer { old.resetBytes(in: 0..<old.count) }   // the restore buffer is a second plaintext secret; wipe it
         let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
         let dst = SecKeychainItemDelete(item)
-        guard dst == errSecSuccess else { throw KeychainError.osStatus(dst, operation: "set (delete own item to switch ACL mode)") }
+        guard dst == errSecSuccess else { throw KeychainError.osStatus(dst, operation: "set (delete own item before re-creating it)") }
         let ast = addRaw(service: service, account: account, data: Data(value.utf8), access: access)
         guard ast == errSecSuccess else {
             let restored = addRaw(service: service, account: account, data: old, access: nil) == errSecSuccess
@@ -295,19 +312,27 @@ enum KeychainStore {
         guard st == errSecSuccess else { throw KeychainError.osStatus(st, operation: "unset (list items)") }
         guard let rows = out as? [[String: Any]] else { throw KeychainError.osStatus(errSecDecode, operation: "unset (decode item list)") }
         var deleted: [String] = []
-        var refused: [(account: String, reason: String)] = []
+        var refused: [(account: String, reason: String, fileKeychain: Bool)] = []
         for row in rows {
-            let acct = row[kSecAttrAccount as String] as? String ?? account ?? "?"
+            let acct = row[kSecAttrAccount as String] as? String ?? account ?? ""
+            let synced = (row[kSecAttrSynchronizable as String] as? Bool) == true || (row[kSecAttrSynchronizable as String] as? Int) == 1
+            let label = acct + (synced ? " (iCloud-synchronized)" : "")
             guard let ref = row[kSecValueRef as String], CFGetTypeID(ref as CFTypeRef) == SecKeychainItemGetTypeID() else {
-                refused.append((acct, "not a file-keychain item (data-protection/iCloud keychain); remove it in Keychain Access"))
+                // Not a file-keychain item: SecKeychainItemDelete cannot take it,
+                // but the generic SecItem API may still delete it by reference.
+                if let ref = row[kSecValueRef as String] {
+                    let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [ref]]
+                    if SecItemDelete(q as CFDictionary) == errSecSuccess { deleted.append(label); continue }
+                }
+                refused.append((acct, "not a file-keychain item (data-protection / iCloud keychain)", false))
                 continue
             }
             let del = SecKeychainItemDelete(ref as! SecKeychainItem)
             switch del {
-            case errSecSuccess: deleted.append(acct)
+            case errSecSuccess: deleted.append(label)
             default:
                 let text = (SecCopyErrorMessageString(del, nil) as String?) ?? ""
-                refused.append((acct, "OSStatus \(del)\(text.isEmpty ? "" : " (\(text))")"))
+                refused.append((acct, "OSStatus \(del)\(text.isEmpty ? "" : " (\(text))")", true))
             }
         }
         if !refused.isEmpty {
@@ -347,15 +372,15 @@ enum KeychainStore {
         return Found(existing: try classify(item: item, service: service, account: account), item: item)
     }
 
-    /// Decide ownership from the decrypt ACL, fail-closed:
-    ///  1. any decrypt entry that trusts an application other than this
-    ///     binary's real path → foreign (all applications reported).
-    ///     `security -T a -T b` puts both apps in ONE entry, so the rule is
-    ///     over applications, not entries.
+    /// Decide ownership from every ACL entry that can reveal the secret
+    /// (decrypt, "any", export clear / wrapped), fail-closed:
+    ///  1. any such entry that trusts an application other than this binary's
+    ///     real path → foreign (all applications reported). `security -T a -T b`
+    ///     puts both apps in ONE entry, so the rule is over applications.
     ///  2. otherwise, any "allow all applications" entry (nil list) → allowAll,
     ///     even when mixed with an entry naming only this binary.
     ///  3. otherwise (every entry names only this binary) → own.
-    ///  4. no decrypt entry at all → foreign with no owners (nothing ties it to us).
+    ///  4. no such entry at all → foreign with no owners (nothing ties it to us).
     ///  5. anything that cannot be read or decoded → thrown OSStatus (the caller
     ///     refuses; nothing is written).
     private static func classify(item: SecKeychainItem, service: String, account: String) throws -> Existing {
@@ -364,18 +389,28 @@ enum KeychainStore {
         guard ast == errSecSuccess, let acc = access else {
             throw KeychainError.osStatus(ast, operation: "set (read item ACL)")
         }
-        guard let aclArray = SecAccessCopyMatchingACLList(acc, kSecACLAuthorizationDecrypt) else {
-            throw KeychainError.osStatus(errSecDecode, operation: "set (list decrypt ACL entries)")
+        var aclArray: CFArray?
+        let lst = SecAccessCopyACLList(acc, &aclArray)
+        guard lst == errSecSuccess else { throw KeychainError.osStatus(lst, operation: "set (list ACL entries)") }
+        guard let allAcls = aclArray as? [SecACL] else {
+            throw KeychainError.osStatus(errSecDecode, operation: "set (decode ACL entries)")
         }
-        guard let acls = aclArray as? [SecACL] else {
-            throw KeychainError.osStatus(errSecDecode, operation: "set (decode decrypt ACL entries)")
+        // Every authorization through which the secret can leave the keychain.
+        let revealing: Set<String> = [kSecACLAuthorizationDecrypt, kSecACLAuthorizationAny,
+                                      kSecACLAuthorizationExportClear, kSecACLAuthorizationExportWrapped].map { $0 as String }.reduce(into: []) { $0.insert($1) }
+        var acls: [SecACL] = []
+        for acl in allAcls {
+            guard let auths = SecACLCopyAuthorizations(acl) as? [String] else {
+                throw KeychainError.osStatus(errSecDecode, operation: "set (decode ACL authorizations)")
+            }
+            if auths.contains(where: revealing.contains) { acls.append(acl) }
         }
         var apps: [String] = []      // raw paths, compared unsanitized
         var sawAllowAll = false
         for acl in acls {
             var appList: CFArray?; var desc: CFString?; var sel = SecKeychainPromptSelector(rawValue: 0)
             let cst = SecACLCopyContents(acl, &appList, &desc, &sel)
-            guard cst == errSecSuccess else { throw KeychainError.osStatus(cst, operation: "set (read decrypt ACL entry)") }
+            guard cst == errSecSuccess else { throw KeychainError.osStatus(cst, operation: "set (read ACL entry)") }
             guard let appsArray = appList else { sawAllowAll = true; continue }   // nil application list = any application
             guard let list = appsArray as? [SecTrustedApplication] else {
                 throw KeychainError.osStatus(errSecDecode, operation: "set (decode trusted-application list)")
@@ -399,11 +434,12 @@ enum KeychainStore {
     private static func daemonLabel(service: String, account: String) -> String { "\(service)/\(account)" }
 
     /// SecTrustedApplicationCopyData returns the application's path as a
-    /// NUL-terminated C string. Returned raw; sanitize only when displaying.
+    /// NUL-terminated C string. Returned raw (nil if unreadable or not valid
+    /// UTF-8 — the caller throws); sanitize only when displaying.
     private static func trustedApplicationPath(_ app: SecTrustedApplication) -> String? {
         var data: CFData?
         guard SecTrustedApplicationCopyData(app, &data) == errSecSuccess, let d = data as Data? else { return nil }
-        return String(decoding: d.prefix { $0 != 0 }, as: UTF8.self)
+        return String(bytes: d.prefix { $0 != 0 }, encoding: .utf8)
     }
 
     /// The keychain records trusted applications by their real path, while
