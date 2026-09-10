@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] — 2026-09-10
 
+### Added
+
+- `set --from-clipboard`: takes the value from the clipboard (trimmed of surrounding whitespace and line breaks) and clears the clipboard once the value is stored and read back; `set --stdin`: takes the first line from a pipe (a terminal is refused, since interactive paste is exactly what bracketed-paste control sequences mangle). The two are mutually exclusive; `--secure` / `--label` / `--explain` only affect the dialog and are reported as ignored. Neither source shows the dialog's "Storing to:" line. The value never enters argv or stdout (#6).
+- Every store is verified: after writing, the value is read back (keychain prompts disabled) and compared byte-for-byte; unreadable, empty or different → the item is removed again and `stored value mismatch` is reported with a non-zero exit. An empty value is refused before anything is written. This covers all three `set` sources and `set-pair` (#6).
+
 ### Fixed
 
 - `set` on an existing item no longer fails with `errSecDuplicateItem` (-25299): an item whose ACL trusts this binary alone is replaced; anything else is refused with the exact command to run first (#5).

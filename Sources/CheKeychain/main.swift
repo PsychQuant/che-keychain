@@ -50,31 +50,52 @@ case .set(let a):
     } catch {
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
-    let title = a.label ?? "Enter credential"
-    let field = PromptField(name: a.account, label: a.label ?? a.account, isSecure: a.secure)
-    let result = PromptDialog.run(
-        title: title,
-        destination: "service=\(a.service) account=\(a.account)",
-        explain: a.explain,
-        fields: [field]
-    )
-    switch result {
-    case .cancel:
-        emit("Cancelled.", to: true)
-        exit(2)
-    case .accept(let values):
-        guard let value = values[a.account], !value.isEmpty else {
-            die("empty input — nothing stored.", exitCode: 1)
+    // Take the value from the requested source (#6). The non-dialog sources
+    // skip the "Storing to:" line the user would otherwise verify; the value
+    // still never enters argv or stdout.
+    let value: String
+    switch a.source {
+    case .dialog:
+        let title = a.label ?? "Enter credential"
+        let field = PromptField(name: a.account, label: a.label ?? a.account, isSecure: a.secure)
+        let result = PromptDialog.run(
+            title: title,
+            destination: "service=\(a.service) account=\(a.account)",
+            explain: a.explain,
+            fields: [field]
+        )
+        switch result {
+        case .cancel:
+            emit("Cancelled.", to: true)
+            exit(2)
+        case .accept(let values):
+            guard let v = values[a.account], !v.isEmpty else {
+                die("empty input — nothing stored.", exitCode: 1)
+            }
+            value = v
+        }
+    case .clipboard, .stdin:
+        if a.secure || a.label != nil || a.explain != nil {
+            emit("note: --secure / --label / --explain only affect the dialog; ignored for \(a.source == .clipboard ? "--from-clipboard" : "--stdin").", to: true)
         }
         do {
-            try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
+            value = a.source == .clipboard ? try InputSource.readClipboard() : try InputSource.readStdin()
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
-        // A --daemon store is the one implicit ACL widening left: say so.
-        emit(a.daemon ? "✓ stored \(a.service)/\(a.account) (daemon-readable: any process can read it without a prompt)"
-                      : "✓ stored \(a.service)/\(a.account)")
     }
+    do {
+        try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
+    } catch {
+        // On failure the clipboard is left alone so the user can retry.
+        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+    }
+    // Only after the value is stored AND read back does the token leave the clipboard.
+    if a.source == .clipboard { InputSource.clearClipboard() }
+    let origin = a.source == .clipboard ? " (from clipboard, clipboard cleared)" : (a.source == .stdin ? " (from stdin)" : "")
+    // A --daemon store is the one implicit ACL widening left: say so.
+    emit(a.daemon ? "✓ stored \(a.service)/\(a.account)\(origin) (daemon-readable: any process can read it without a prompt)"
+                  : "✓ stored \(a.service)/\(a.account)\(origin)")
 
 case .setPair(let a):
     // Both accounts are checked before the dialog so a *refusal* on the second

@@ -12,6 +12,7 @@ enum AppVersion {
 
     USAGE
       che-keychain set       --service S --account A [--label L] [--explain E] [--secure] [--daemon]
+                             [--from-clipboard | --stdin]
       che-keychain set-pair  --service S --visible-account I --secure-account S \\
                              [--visible-label LI] [--secure-label LS] [--title T] [--explain E]
       che-keychain has       --service S --account A
@@ -36,6 +37,16 @@ enum AppVersion {
       a write can still fail afterwards for other reasons (locked keychain…). `unset` deletes by reference, so it
       also removes items created by other programs, prints what it removed, and
       reports every item it could not remove.
+
+      Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
+      reads the clipboard's text (trimmed of surrounding whitespace and line
+      breaks) and CLEARS the clipboard once the value is stored and verified;
+      `--stdin` reads the first line from a pipe (a terminal is refused —
+      interactive paste is what bracketed-paste mangles). Neither shows the
+      "Storing to:" line, so check --service/--account yourself. The value still
+      never enters argv or stdout. Every store — all three sources, and
+      set-pair — is read back and compared; an empty or different value is
+      removed again and reported, so an empty item can never be created.
 
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't
@@ -63,6 +74,12 @@ enum AppVersion {
 
       # Daemon-readable secret (launchd agent reads it without a prompt)
       che-keychain set --service bus-eta-logger --account tdx_secret --secure --daemon
+
+      # Paste-free: copy the token, then
+      che-keychain set --service ntu-cool-canvas --account default --from-clipboard --daemon
+
+      # Automation: pipe it (never a terminal)
+      pbpaste | che-keychain set --service ntu-cool-canvas --account default --stdin
 
       # Rotate a daemon-readable secret (0.3.0+: an existing allow-all item is
       # never overwritten in place — remove it explicitly first)
