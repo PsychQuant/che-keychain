@@ -119,6 +119,32 @@ final class CommandParserTests: XCTestCase {
         XCTAssertNoThrow(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "Used for production deploys"]))
     }
 
+    // MARK: - Input sources (#6)
+
+    func testSetDefaultsToDialogSource() throws {
+        guard case .set(let a) = try CommandParser.parse("set", ["--service", "s", "--account", "a"]) else { return XCTFail() }
+        XCTAssertEqual(a.source, .dialog)
+    }
+
+    func testSetParsesInputSourceFlags() throws {
+        guard case .set(let c) = try CommandParser.parse("set", ["--service", "s", "--account", "a", "--from-clipboard"]) else { return XCTFail() }
+        XCTAssertEqual(c.source, .clipboard)
+        guard case .set(let i) = try CommandParser.parse("set", ["--service", "s", "--account", "a", "--stdin", "--daemon"]) else { return XCTFail() }
+        XCTAssertEqual(i.source, .stdin)
+        XCTAssertTrue(i.daemon, "sources combine with --daemon")
+    }
+
+    func testSetRejectsBothSources() {
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--from-clipboard", "--stdin"])) { err in
+            let msg = (err as? LocalizedError)?.errorDescription ?? "\(err)"
+            XCTAssertTrue(msg.contains("mutually exclusive"), msg)
+        }
+    }
+
+    func testSetPairHasNoSourceFlags() {
+        XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "u", "--secure-account", "p", "--stdin"]))
+    }
+
     func testValidateIdentifierAcceptsTypical() {
         XCTAssertNoThrow(try CommandParser.validateIdentifier("che-transport-tdx", field: "service"))
         XCTAssertNoThrow(try CommandParser.validateIdentifier("client_secret", field: "account"))

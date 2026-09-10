@@ -32,6 +32,8 @@ struct SetArgs: Equatable {
     var explain: String?
     var secure: Bool
     var daemon: Bool = false
+    /// Where the value comes from (#6). `.dialog` unless --from-clipboard / --stdin.
+    var source: InputSourceKind = .dialog
 }
 
 struct SetPairArgs: Equatable {
@@ -66,6 +68,8 @@ enum CommandParser {
         var explain: String?
         var secure = false
         var daemon = false
+        var fromClipboard = false
+        var fromStdin = false
 
         var i = 0
         while i < args.count {
@@ -76,6 +80,8 @@ enum CommandParser {
             case "--explain": explain = try valueAfter(&i, args)
             case "--secure":  secure  = true; i += 1
             case "--daemon":  daemon  = true; i += 1
+            case "--from-clipboard": fromClipboard = true; i += 1
+            case "--stdin":          fromStdin = true; i += 1
             default: throw CommandError.unknownOption(args[i])
             }
         }
@@ -85,7 +91,11 @@ enum CommandParser {
         try validateIdentifier(a, field: "account")
         if let l = label   { try validateDialogText(l, field: "label") }
         if let e = explain { try validateDialogText(e, field: "explain", multiline: true) }
-        return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon)
+        if fromClipboard && fromStdin {
+            throw CommandError.invalidValue(field: "input source", reason: "--from-clipboard and --stdin are mutually exclusive")
+        }
+        let source: InputSourceKind = fromClipboard ? .clipboard : (fromStdin ? .stdin : .dialog)
+        return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon, source: source)
     }
 
     // MARK: - set-pair
