@@ -84,7 +84,7 @@ enum CommandParser {
         try validateIdentifier(s, field: "service")
         try validateIdentifier(a, field: "account")
         if let l = label   { try validateDialogText(l, field: "label") }
-        if let e = explain { try validateDialogText(e, field: "explain") }
+        if let e = explain { try validateDialogText(e, field: "explain", multiline: true) }
         return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon)
     }
 
@@ -118,9 +118,10 @@ enum CommandParser {
         try validateIdentifier(s, field: "service")
         try validateIdentifier(v, field: "visible-account")
         try validateIdentifier(sa, field: "secure-account")
-        for (val, name) in [(visibleLabel, "visible-label"), (secureLabel, "secure-label"), (title, "title"), (explain, "explain")] {
+        for (val, name) in [(visibleLabel, "visible-label"), (secureLabel, "secure-label"), (title, "title")] {
             if let val = val { try validateDialogText(val, field: name) }
         }
+        if let e = explain { try validateDialogText(e, field: "explain", multiline: true) }
         if v == sa {
             throw CommandError.invalidValue(field: "secure-account", reason: "must differ from visible-account")
         }
@@ -182,11 +183,18 @@ enum CommandParser {
     /// service / account identifiers go into URL-like keychain query keys; keep
     /// them sanity-checked to catch obvious mistakes (empty string, control chars).
     /// Dialog strings (--label, --title, --explain, …) are rendered next to the
-    /// "Storing to:" destination line the user is told to verify, so they must
-    /// not be able to fake a line of their own.
-    static func validateDialogText(_ s: String, field: String) throws {
-        if s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) }) {
-            throw CommandError.invalidValue(field: field, reason: "contains control characters or line breaks")
+    /// "Storing to:" destination line. This check only removes the cheap tricks
+    /// (control characters, bidi/format overrides, and line breaks in the
+    /// single-line fields); it cannot stop look-alike plain text, and the
+    /// destination line always comes first. --explain may span lines.
+    static func validateDialogText(_ s: String, field: String, multiline: Bool = false) throws {
+        let bad = s.unicodeScalars.contains { u in
+            let cat = u.properties.generalCategory
+            if multiline && (u == "\n" || u == "\r") { return false }
+            return u.value < 0x20 || u.value == 0x7f || cat == .control || cat == .format
+        }
+        if bad {
+            throw CommandError.invalidValue(field: field, reason: multiline ? "contains control or format characters" : "contains control or format characters, or line breaks")
         }
     }
 
@@ -200,8 +208,8 @@ enum CommandParser {
         }
         // Check the ORIGINAL string: a value with leading/trailing newlines trims
         // clean but is stored — and echoed into messages — as typed.
-        if s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) }) {
-            throw CommandError.invalidValue(field: field, reason: "contains control characters")
+        if s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f || $0.properties.generalCategory == .format }) }) {
+            throw CommandError.invalidValue(field: field, reason: "contains control or format characters")
         }
     }
 }

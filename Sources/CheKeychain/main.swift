@@ -138,10 +138,10 @@ case .unset(let service, let account):
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
     if removed.isEmpty {
-        emit("nothing to remove under \(service)\(account.map { "/\($0)" } ?? "")")
+        emit("nothing to remove under \(sanitize(service))\(account.map { "/\(sanitize($0))" } ?? "")")
     } else {
         // Removed items may have been created by other programs (that is what
         // `set`'s refusal sends the user here for), so say exactly what went.
-        emit("✓ removed \(removed.count) account(s) under \(service): \(removed.map(sanitize).joined(separator: ", "))")
+        emit("✓ removed \(removed.count) account(s) under \(sanitize(service)): \(removed.map(sanitize).joined(separator: ", "))")
     }
 }

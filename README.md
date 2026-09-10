@@ -95,7 +95,7 @@ make release-signed
 
 ```bash
 swift build           # debug build
-swift test            # run unit tests (20 tests covering arg parsing, keychain round-trip, dialog text)
+swift test            # run unit tests (42 tests covering arg parsing, keychain round-trip, dialog text)
 make release          # ad-hoc-signed release binary in release/ (dev only)
 make release-signed   # signed + notarized for distribution
 ```

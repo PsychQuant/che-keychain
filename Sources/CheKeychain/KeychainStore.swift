@@ -43,7 +43,10 @@ enum KeychainError: Error, LocalizedError {
                 msg += "\n  Remove it with: security delete-generic-password -s <service> -a <account>"
             case errSecDuplicateItem:      // -25299
                 msg += "\n  An item with this service/account appeared between the ownership check and the write. Retry."
-            default: break
+            default:
+                if op.hasPrefix("set (") {
+                    msg += "\n  Nothing was written. If this persists, remove the item first (`che-keychain unset --service <service> --account <account>`, or Keychain Access) and retry."
+                }
             }
             return msg
         case .notFound: return "keychain item not found"
@@ -68,9 +71,10 @@ enum KeychainError: Error, LocalizedError {
             return """
             keychain item \(svc)/\(acct) exists but is not a file-keychain item (data-protection or iCloud keychain), \
             so che-keychain cannot inspect its ACL and will not overwrite it. Nothing was written.
-              `unset` will try to remove it through the generic keychain API and tell you if it cannot:
+              If it is an iCloud-synchronized item, `unset` will try to remove it through the generic keychain API \
+            and tell you if it cannot:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
-              If that fails, remove or rename it in Keychain Access (or with the API that created it), then retry.
+              Otherwise (data-protection keychain) remove or rename it in Keychain Access, then retry.
             """
         case .ambiguous(let svc, let acct, let n):
             return """
@@ -100,7 +104,7 @@ enum KeychainError: Error, LocalizedError {
                     return head + "\n      → remove it in Keychain Access (it is not a file-keychain item; `security` cannot see it either)"
                 }
                 if r.account.isEmpty {
-                    return head + "\n      security delete-generic-password -s \(shellQuote(svc))   # deletes the first local match under the service"
+                    return head + "\n      security delete-generic-password -s \(shellQuote(svc))   # deletes the FIRST local match under the service — check with `security find-generic-password -s …` which one that is"
                 }
                 guard sanitize(r.account) == r.account else {
                     return head + "\n      → its account name contains control characters; remove it in Keychain Access"
@@ -268,13 +272,16 @@ enum KeychainStore {
         }
         // Best-effort wipe of the restore buffer only; the new value itself
         // (String from the dialog) is not wiped — pre-existing, see README.
-        defer { if var o = old { o.resetBytes(in: 0..<o.count) } }
+        defer { if old != nil { old!.resetBytes(in: 0..<old!.count) } }   // in place: `old` is the sole reference
         let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
+        // Re-create the item in the keychain it lives in, not the default one.
+        var keychain: SecKeychain?
+        _ = SecKeychainItemCopyKeychain(item, &keychain)
         let dst = SecKeychainItemDelete(item)
         guard dst == errSecSuccess else { throw KeychainError.osStatus(dst, operation: "set (delete own item before re-creating it)") }
-        let ast = addRaw(service: service, account: account, data: Data(value.utf8), access: access)
+        let ast = addRaw(service: service, account: account, data: Data(value.utf8), access: access, keychain: keychain)
         guard ast == errSecSuccess else {
-            let restored = old.map { addRaw(service: service, account: account, data: $0, access: nil) == errSecSuccess } ?? false
+            let restored = old.map { addRaw(service: service, account: account, data: $0, access: nil, keychain: keychain) == errSecSuccess } ?? false
             throw KeychainError.replaceFailed(service: service, account: account, addStatus: ast, restored: restored)
         }
     }
@@ -289,7 +296,7 @@ enum KeychainStore {
         guard st == errSecSuccess else { throw KeychainError.osStatus(st, operation: "set (add)") }
     }
 
-    private static func addRaw(service: String, account: String, data: Data, access: SecAccess?) -> OSStatus {
+    private static func addRaw(service: String, account: String, data: Data, access: SecAccess?, keychain: SecKeychain? = nil) -> OSStatus {
         var add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -297,6 +304,7 @@ enum KeychainStore {
             kSecValueData as String: data
         ]
         if let access = access { add[kSecAttrAccess as String] = access }
+        if let keychain = keychain { add[kSecUseKeychain as String] = keychain }
         return SecItemAdd(add as CFDictionary, nil)
     }
 
@@ -366,10 +374,12 @@ enum KeychainStore {
             default: refused.append((acct, statusText(del), true))
             }
         }
+        var seen = Set<String>()
+        let uniqueDeleted = deleted.filter { seen.insert($0).inserted }
         if !refused.isEmpty {
-            throw KeychainError.undeletable(service: service, deleted: deleted, refused: refused)
+            throw KeychainError.undeletable(service: service, deleted: uniqueDeleted, refused: refused)
         }
-        return deleted
+        return uniqueDeleted
     }
 
     // MARK: - Ownership inspection
@@ -377,6 +387,12 @@ enum KeychainStore {
     private struct Found { let existing: Existing; let item: SecKeychainItem? }
 
     private static func inspect(service: String, account: String) throws -> Found {
+        // Inspection never needs the user's approval; make sure it can never
+        // block a headless caller on a SecurityAgent prompt either.
+        var wasAllowed: DarwinBoolean = true
+        _ = SecKeychainGetUserInteractionAllowed(&wasAllowed)
+        _ = SecKeychainSetUserInteractionAllowed(false)
+        defer { _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) }
         var out: CFTypeRef?
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -459,7 +475,9 @@ enum KeychainStore {
         let isMe: (String) -> Bool = { $0.hasPrefix("/") && realpath($0) == me }
         if apps.contains(where: { !isMe($0) }) {
             var seen = Set<String>()
-            return .foreign(owners: apps.map { sanitize($0) }.filter { seen.insert($0).inserted })
+            var owners = apps.map { sanitize($0) }.filter { seen.insert($0).inserted }
+            if sawAllowAll { owners.append("any application (allow-all entry)") }
+            return .foreign(owners: owners)
         }
         if sawAllowAll { return .allowAll }
         if apps.isEmpty { return .foreign(owners: []) }

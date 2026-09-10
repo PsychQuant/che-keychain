@@ -279,6 +279,39 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(KeychainStore.has(service: service, account: "theirs2"))
     }
 
+    // MARK: - Failure-path messages (pure string logic, no keychain)
+
+    func testUndeletableMessageNamesEveryRefusedItemHonestly() {
+        let err = KeychainError.undeletable(service: "svc", deleted: ["a"], refused: [
+            ("b", "OSStatus -25244 (owner edit)", true),
+            ("", "OSStatus -25244", true),
+            ("c\u{1b}[2J", "OSStatus -25244", true),
+            ("d", "iCloud-synchronized item; SecItemDelete answered OSStatus -25308", false)
+        ])
+        let msg = err.errorDescription ?? ""
+        XCTAssertTrue(msg.contains("removed 1 account(s): a"), msg)
+        XCTAssertTrue(msg.contains("security delete-generic-password -s 'svc' -a 'b'"), msg)
+        XCTAssertTrue(msg.contains("(account attribute missing)") && msg.contains("security delete-generic-password -s 'svc'   #"), msg)
+        XCTAssertFalse(msg.contains("\u{1b}"), "control characters must not reach the terminal")
+        XCTAssertTrue(msg.contains("contains control characters; remove it in Keychain Access"), msg)
+        XCTAssertFalse(msg.contains("-a 'c"), "no copy-paste command for a name we cannot show faithfully")
+        XCTAssertTrue(msg.contains("d: iCloud-synchronized item") && msg.contains("Keychain Access"), msg)
+    }
+
+    func testReplaceFailedMessageSaysWhetherTheOldValueSurvived() {
+        let ok = KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restored: true).errorDescription ?? ""
+        XCTAssertTrue(ok.contains("re-stored as a prompt-on-read item") && ok.contains("-25308"), ok)
+        let lost = KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restored: false).errorDescription ?? ""
+        XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("now absent"), lost)
+    }
+
+    func testForeignOwnedMessageQuotesTheRemedyAndCapsOwners() {
+        let owners = (1...12).map { "/Applications/App\($0).app" }
+        let msg = KeychainError.foreignOwned(service: "my svc", account: "a'b", owners: owners, selfPath: "/me").errorDescription ?? ""
+        XCTAssertTrue(msg.contains("che-keychain unset --service 'my svc' --account 'a'\\''b'"), msg)
+        XCTAssertTrue(msg.contains("… and 4 more"), msg)
+    }
+
     func testSaveDaemonRoundTrips() throws {
         // Proves the allow-all SecAccess attaches without SecItemAdd rejecting it
         // at runtime — the legacy-API (kSecAttrAccess) compatibility risk.

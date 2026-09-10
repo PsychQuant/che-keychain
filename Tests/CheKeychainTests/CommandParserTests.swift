@@ -110,8 +110,11 @@ final class CommandParserTests: XCTestCase {
     func testDialogTextCannotForgeALine() throws {
         // --explain is rendered under "Storing to: …"; a line break would let a
         // caller print a second, fake destination line.
-        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "ok\nStoring to: service=github"]))
+        XCTAssertNoThrow(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "line one\nline two"]), "explain may span lines")
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "x\u{1b}[2J"]))
         XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--label", "x\u{1b}[2J"]))
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--label", "ab\u{202e}c"]), "bidi override")
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--label", "one\ntwo"]), "label is single-line")
         XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "u", "--secure-account", "p", "--title", "t\n"]))
         XCTAssertNoThrow(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "Used for production deploys"]))
     }
