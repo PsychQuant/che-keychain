@@ -59,7 +59,7 @@ enum KeychainError: Error, LocalizedError {
             binary alone; anything else may belong to another program, and replacing it would destroy that program's secret.
               If nothing else needs it — this permanently deletes the stored secret — remove it explicitly, then retry:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
-              (`unset` removes every match, including an iCloud-synchronized twin; `security delete-generic-password \
+              (`unset` removes every match it can, an iCloud-synchronized twin included; `security delete-generic-password \
             -s \(shellQuote(svc)) -a \(shellQuote(acct))` removes one local match per call.)
               If it was created by another copy of che-keychain (different install path), use that copy instead. \
             If you added another application via "Always Allow", the same `unset` then `set` re-creates it trusted to this binary only.
@@ -67,8 +67,10 @@ enum KeychainError: Error, LocalizedError {
         case .unsupportedItem(let svc, let acct):
             return """
             keychain item \(svc)/\(acct) exists but is not a file-keychain item (data-protection or iCloud keychain), \
-            so che-keychain can neither inspect its ACL nor delete it. Nothing was written.
-              Remove or rename it in Keychain Access (or with the API that created it), then retry.
+            so che-keychain cannot inspect its ACL and will not overwrite it. Nothing was written.
+              `unset` will try to remove it through the generic keychain API and tell you if it cannot:
+                che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
+              If that fails, remove or rename it in Keychain Access (or with the API that created it), then retry.
             """
         case .ambiguous(let svc, let acct, let n):
             return """
@@ -76,7 +78,7 @@ enum KeychainError: Error, LocalizedError {
             Refusing to guess which one to write.
               Inspect them with:  security find-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
               To remove them:  che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
-                (removes every match it can, including an iCloud twin on all your devices, and reports any it cannot)
+                (removes every match it can — an iCloud twin included, which iCloud then propagates — and reports any it cannot)
               To remove one local match per call:  security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(acct))
               A twin that neither can remove lives in the iCloud / data-protection keychain: remove it in Keychain Access.
             """
@@ -94,10 +96,16 @@ enum KeychainError: Error, LocalizedError {
             // sanitized copy could name a different item. `sanitize` is display-only.
             let list = refused.map { r -> String in
                 let head = "    \(r.account.isEmpty ? "(account attribute missing)" : sanitize(r.account)): \(r.reason)"
-                if r.fileKeychain && !r.account.isEmpty {
-                    return head + "\n      security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(r.account))   # deletes the first local match"
+                guard r.fileKeychain else {
+                    return head + "\n      → remove it in Keychain Access (it is not a file-keychain item; `security` cannot see it either)"
                 }
-                return head + "\n      → remove it in Keychain Access (it is not a file-keychain item; `security` cannot see it either)"
+                if r.account.isEmpty {
+                    return head + "\n      security delete-generic-password -s \(shellQuote(svc))   # deletes the first local match under the service"
+                }
+                guard sanitize(r.account) == r.account else {
+                    return head + "\n      → its account name contains control characters; remove it in Keychain Access"
+                }
+                return head + "\n      security delete-generic-password -s \(shellQuote(svc)) -a \(shellQuote(r.account))   # deletes the first local match"
             }.joined(separator: "\n")
             let done = deleted.isEmpty ? "removed nothing" : "removed \(deleted.count) account(s): \(deleted.map(sanitize).joined(separator: ", "))"
             return """
@@ -203,11 +211,15 @@ enum KeychainStore {
     /// decision on #5): SecItemUpdate DOES succeed on an item another program
     /// created, but that leaves the new secret inside an item that program
     /// manages — and with --daemon it silently appended an allow-all ACL entry
-    /// to that item (round 1). Replacing it is a destructive act on someone
-    /// else's secret, so it must be an explicit `unset` by the user, never a
-    /// side effect of `set`. An allow-all entry names no application, so such
-    /// items (including our own --daemon items) cannot be told apart from
-    /// anyone else's; they are refused in both modes.
+    /// to that item (round 1). Replacing an item whose ACL lets any other
+    /// application read it is a destructive act on someone else's secret, so
+    /// it must be an explicit `unset` by the user, never a side effect of
+    /// `set`. "Own" is a path identity, not provenance: an item some other
+    /// program pre-created with a decrypt list naming only this binary is
+    /// treated as ours (nothing else can read it) and IS replaced. An
+    /// allow-all entry names no application, so such items (including our own
+    /// --daemon items) cannot be told apart from anyone else's; refused in
+    /// both modes.
     ///
     /// Why delete + add for our own items instead of an in-place update: an
     /// in-place update keeps whatever ACL the item already has, including an
@@ -236,22 +248,33 @@ enum KeychainStore {
     }
 
     /// Own item → delete by reference and re-add with the requested access.
-    /// Everything that can fail before the delete is done first (read old value,
-    /// build the SecAccess); if the Add still fails, the old value is re-added as
-    /// a prompt-on-read item so the secret is not lost.
+    /// The SecAccess is built before the delete. The old value is read first —
+    /// best-effort and with keychain prompts disabled, so a locked keychain or
+    /// a partition-ID gate can never hang a headless caller here — purely so
+    /// it can be re-added if the Add fails; if it could not be read, the
+    /// failure report says the item could not be restored.
     private static func replaceOwnItem(_ item: SecKeychainItem, service: String, account: String, value: String, daemon: Bool) throws {
-        var oldData: CFTypeRef?
-        let rq: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item], kSecReturnData as String: true]
-        let rst = SecItemCopyMatching(rq as CFDictionary, &oldData)
-        guard rst == errSecSuccess else { throw KeychainError.osStatus(rst, operation: "set (read current value before replacing)") }
-        guard var old = oldData as? Data else { throw KeychainError.osStatus(errSecDecode, operation: "set (decode current value before replacing)") }
-        defer { old.resetBytes(in: 0..<old.count) }   // the restore buffer is a second plaintext secret; wipe it
+        // Best-effort read of the current value, prompts disabled (never hang).
+        var old: Data? = nil
+        do {
+            var oldData: CFTypeRef?
+            let rq: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item], kSecReturnData as String: true]
+            var wasAllowed: DarwinBoolean = true
+            _ = SecKeychainGetUserInteractionAllowed(&wasAllowed)
+            _ = SecKeychainSetUserInteractionAllowed(false)
+            let rst = SecItemCopyMatching(rq as CFDictionary, &oldData)
+            _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue)
+            if rst == errSecSuccess { old = oldData as? Data }
+        }
+        // Best-effort wipe of the restore buffer only; the new value itself
+        // (String from the dialog) is not wiped — pre-existing, see README.
+        defer { if var o = old { o.resetBytes(in: 0..<o.count) } }
         let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
         let dst = SecKeychainItemDelete(item)
         guard dst == errSecSuccess else { throw KeychainError.osStatus(dst, operation: "set (delete own item before re-creating it)") }
         let ast = addRaw(service: service, account: account, data: Data(value.utf8), access: access)
         guard ast == errSecSuccess else {
-            let restored = addRaw(service: service, account: account, data: old, access: nil) == errSecSuccess
+            let restored = old.map { addRaw(service: service, account: account, data: $0, access: nil) == errSecSuccess } ?? false
             throw KeychainError.replaceFailed(service: service, account: account, addStatus: ast, restored: restored)
         }
     }
@@ -313,26 +336,34 @@ enum KeychainStore {
         guard let rows = out as? [[String: Any]] else { throw KeychainError.osStatus(errSecDecode, operation: "unset (decode item list)") }
         var deleted: [String] = []
         var refused: [(account: String, reason: String, fileKeychain: Bool)] = []
+        func statusText(_ st: OSStatus) -> String {
+            let text = (SecCopyErrorMessageString(st, nil) as String?) ?? ""
+            return "OSStatus \(st)\(text.isEmpty ? "" : " (\(text))")"
+        }
         for row in rows {
             let acct = row[kSecAttrAccount as String] as? String ?? account ?? ""
             let synced = (row[kSecAttrSynchronizable as String] as? Bool) == true || (row[kSecAttrSynchronizable as String] as? Int) == 1
-            let label = acct + (synced ? " (iCloud-synchronized)" : "")
             guard let ref = row[kSecValueRef as String], CFGetTypeID(ref as CFTypeRef) == SecKeychainItemGetTypeID() else {
                 // Not a file-keychain item: SecKeychainItemDelete cannot take it,
-                // but the generic SecItem API may still delete it by reference.
-                if let ref = row[kSecValueRef as String] {
-                    let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [ref]]
-                    if SecItemDelete(q as CFDictionary) == errSecSuccess { deleted.append(label); continue }
+                // and kSecMatchItemList accepts SecKeychainItemRefs only, so try
+                // the generic API by attributes (synchronizable items only —
+                // a non-synced query could hit a local twin instead). The
+                // status is reported verbatim; nothing is assumed from it.
+                if synced, !acct.isEmpty {
+                    let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                            kSecAttrAccount as String: acct, kSecAttrSynchronizable as String: true]
+                    let st = SecItemDelete(q as CFDictionary)
+                    if st == errSecSuccess || st == errSecItemNotFound { deleted.append(acct); continue }
+                    refused.append((acct, "iCloud-synchronized item; SecItemDelete answered \(statusText(st))", false))
+                } else {
+                    refused.append((acct, "not a file-keychain item (data-protection keychain); no delete path from che-keychain", false))
                 }
-                refused.append((acct, "not a file-keychain item (data-protection / iCloud keychain)", false))
                 continue
             }
             let del = SecKeychainItemDelete(ref as! SecKeychainItem)
             switch del {
-            case errSecSuccess: deleted.append(label)
-            default:
-                let text = (SecCopyErrorMessageString(del, nil) as String?) ?? ""
-                refused.append((acct, "OSStatus \(del)\(text.isEmpty ? "" : " (\(text))")", true))
+            case errSecSuccess: deleted.append(acct)
+            default: refused.append((acct, statusText(del), true))
             }
         }
         if !refused.isEmpty {
@@ -423,7 +454,13 @@ enum KeychainStore {
             }
         }
         let me = try selfPath()
-        if apps.contains(where: { realpath($0) != me }) { return .foreign(owners: apps.map { sanitize($0) }) }
+        // Only an absolute path can be resolved without consulting the caller's
+        // working directory; anything else is treated as another application.
+        let isMe: (String) -> Bool = { $0.hasPrefix("/") && realpath($0) == me }
+        if apps.contains(where: { !isMe($0) }) {
+            var seen = Set<String>()
+            return .foreign(owners: apps.map { sanitize($0) }.filter { seen.insert($0).inserted })
+        }
         if sawAllowAll { return .allowAll }
         if apps.isEmpty { return .foreign(owners: []) }
         return .own

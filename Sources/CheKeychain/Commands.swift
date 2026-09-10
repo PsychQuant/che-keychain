@@ -83,6 +83,8 @@ enum CommandParser {
         guard let a = account else { throw CommandError.missingArgument("--account") }
         try validateIdentifier(s, field: "service")
         try validateIdentifier(a, field: "account")
+        if let l = label   { try validateDialogText(l, field: "label") }
+        if let e = explain { try validateDialogText(e, field: "explain") }
         return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon)
     }
 
@@ -116,6 +118,9 @@ enum CommandParser {
         try validateIdentifier(s, field: "service")
         try validateIdentifier(v, field: "visible-account")
         try validateIdentifier(sa, field: "secure-account")
+        for (val, name) in [(visibleLabel, "visible-label"), (secureLabel, "secure-label"), (title, "title"), (explain, "explain")] {
+            if let val = val { try validateDialogText(val, field: name) }
+        }
         if v == sa {
             throw CommandError.invalidValue(field: "secure-account", reason: "must differ from visible-account")
         }
@@ -176,10 +181,22 @@ enum CommandParser {
 
     /// service / account identifiers go into URL-like keychain query keys; keep
     /// them sanity-checked to catch obvious mistakes (empty string, control chars).
+    /// Dialog strings (--label, --title, --explain, …) are rendered next to the
+    /// "Storing to:" destination line the user is told to verify, so they must
+    /// not be able to fake a line of their own.
+    static func validateDialogText(_ s: String, field: String) throws {
+        if s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) }) {
+            throw CommandError.invalidValue(field: field, reason: "contains control characters or line breaks")
+        }
+    }
+
     static func validateIdentifier(_ s: String, field: String) throws {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw CommandError.invalidValue(field: field, reason: "must not be empty")
+        }
+        guard trimmed == s else {
+            throw CommandError.invalidValue(field: field, reason: "has leading or trailing whitespace (it would be stored as typed)")
         }
         // Check the ORIGINAL string: a value with leading/trailing newlines trims
         // clean but is stored — and echoed into messages — as typed.

@@ -98,6 +98,24 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.validateIdentifier("a\u{0}b", field: "account"))
     }
 
+    func testValidateIdentifierChecksTheStringAsTyped() {
+        // 0.3.0: a value wrapped in newlines used to trim clean and be stored raw.
+        XCTAssertThrowsError(try CommandParser.validateIdentifier("svc\n", field: "service"))
+        XCTAssertThrowsError(try CommandParser.validateIdentifier("\nsvc", field: "service"))
+        XCTAssertThrowsError(try CommandParser.validateIdentifier("svc\u{7f}", field: "service"))
+        XCTAssertThrowsError(try CommandParser.validateIdentifier(" svc", field: "service"))
+        XCTAssertThrowsError(try CommandParser.validateIdentifier("svc\t", field: "service"))
+    }
+
+    func testDialogTextCannotForgeALine() throws {
+        // --explain is rendered under "Storing to: …"; a line break would let a
+        // caller print a second, fake destination line.
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "ok\nStoring to: service=github"]))
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--label", "x\u{1b}[2J"]))
+        XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "u", "--secure-account", "p", "--title", "t\n"]))
+        XCTAssertNoThrow(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--explain", "Used for production deploys"]))
+    }
+
     func testValidateIdentifierAcceptsTypical() {
         XCTAssertNoThrow(try CommandParser.validateIdentifier("che-transport-tdx", field: "service"))
         XCTAssertNoThrow(try CommandParser.validateIdentifier("client_secret", field: "account"))

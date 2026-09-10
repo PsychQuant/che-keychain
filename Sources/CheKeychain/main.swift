@@ -71,7 +71,9 @@ case .set(let a):
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
-        emit("✓ stored \(a.service)/\(a.account)")
+        // A --daemon store is the one implicit ACL widening left: say so.
+        emit(a.daemon ? "✓ stored \(a.service)/\(a.account) (daemon-readable: any process can read it without a prompt)"
+                      : "✓ stored \(a.service)/\(a.account)")
     }
 
 case .setPair(let a):

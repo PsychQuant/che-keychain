@@ -29,8 +29,11 @@ enum AppVersion {
       a different path, an app you once clicked "Always Allow" for), or an item
       with an "allow all applications" entry — which carries no owner identity
       and is also what --daemon writes, so re-setting a daemon item is `unset`
-      then `set --daemon`. che-keychain never overwrites an item it cannot
-      attribute to itself, in either mode. `unset` deletes by reference, so it
+      then `set --daemon`. che-keychain never overwrites an item whose ACL lets
+      anything but this binary read it. "This binary alone" is a path identity,
+      not provenance: an item another program pre-created for this binary only
+      counts as ours and is replaced. Refusals are decided before the dialog;
+      a write can still fail afterwards for other reasons (locked keychain…). `unset` deletes by reference, so it
       also removes items created by other programs, prints what it removed, and
       reports every item it could not remove.
 
