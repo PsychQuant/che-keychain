@@ -10,7 +10,7 @@ Every CLI / MCP that needs to store an API key or password has a UX problem:
 - Asking the LLM to handle the value: the secret lands in the conversation transcript
 - Custom getpass per tool: every tool re-implements the same prompt, none of them are shared / trusted
 
-`che-keychain` is one signed binary that owns the input UI. Callers invoke it; it pops a native NSAlert; the user types; the value is written to keychain via `SecItemAdd` (or `SecItemUpdate` when the item already exists and is ours). The caller's process never sees the typed string — they get an exit code.
+`che-keychain` is one signed binary that owns the input UI. Callers invoke it; it pops a native NSAlert; the user types; the value is written to keychain via `SecItemAdd` (or `SecItemUpdate` / delete-and-re-add when the item already exists and this binary created it). The caller's process never sees the typed string — they get an exit code.
 
 ## Install
 
@@ -56,7 +56,7 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 |------|----------------------|
 | Caller invokes `che-keychain set --service X --account Y --secure` | exit code, stderr message |
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
-| Binary calls `SecItemAdd` / `SecItemUpdate` to write to `login.keychain-db`; items owned by another program are refused, never overwritten | (only this binary holds the value in memory, briefly) |
+| Binary calls `SecItemAdd` / `SecItemUpdate` to write to `login.keychain-db`; an item this binary did not create (per its decrypt ACL) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
 
 Key properties:

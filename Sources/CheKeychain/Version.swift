@@ -20,11 +20,17 @@ enum AppVersion {
       che-keychain --help
 
     DETAILS
-      `set` / `set-pair` update an existing item in place only when it is ours and
-      its ACL matches the requested mode. An item created by another program (e.g.
-      the `security` CLI) is REFUSED with the exact `security delete-generic-password`
-      command to run first — such items stay unreadable to our consumers anyway.
-      Switching an item between normal and --daemon requires `unset` then `set`.
+      `set` / `set-pair` overwrite an existing item that THIS binary created:
+      same ACL mode → the value is updated in place; switching between normal and
+      --daemon → the item is deleted and re-added with the new ACL. An item created
+      by another program (e.g. the `security` CLI, or another copy of che-keychain
+      at a different path) is REFUSED before the dialog opens, with the exact
+      `che-keychain unset` command to run first: che-keychain never silently
+      replaces an item it did not create (an in-place update would leave the new
+      secret under that program's ACL and only look like success). Ownership is
+      judged by this binary's real path in the item's decrypt ACL (allow-all
+      items: by the ACL label service/account). `unset` deletes by reference and
+      therefore also removes items created by other programs.
 
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't

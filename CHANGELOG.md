@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `set` / `set-pair` no longer fail with `errSecDuplicateItem` (-25299) on an existing item. The behaviour now depends on who owns it (#5):
-  - **Ours, same ACL mode** → value-only `SecItemUpdate` (a real overwrite).
-  - **Created by another program** (e.g. the `security` CLI) → **refused**, printing the exact `security delete-generic-password -s S -a A` command to run first. Rationale: `SecItemDelete` on such an item returns `errSecInvalidOwnerEdit` (-25244), and `SecItemUpdate` would "succeed" while leaving the value readable only by the original owner — a fake success. With `--daemon` it would additionally append an allow-all ACL to an item we don't own.
-  - **Ours, but the other mode** (`--daemon` on a prompt-on-read item, or vice versa) → refused with `che-keychain unset` as the remedy; `SecItemUpdate` unions ACL entries instead of replacing them, so the mode cannot be flipped in place.
-- `-25244` error hint corrected: it now says the item belongs to another program and names the `security delete-generic-password` remedy (the old text wrongly claimed the ACL could not be changed).
+- `set` / `set-pair` on an existing item: the behaviour now depends on who created it (#5). Before, `save()` ran `SecItemDelete` (status discarded) then `SecItemAdd`, so an item created by another program surfaced as `errSecDuplicateItem` (-25299) with no explanation.
+  - **Created by this binary, same ACL mode** → value updated in place (`SecItemUpdate`, bound to the inspected item).
+  - **Created by this binary, other mode** (`--daemon` on a prompt-on-read item or vice versa) → deleted and re-added with the requested ACL. `SecItemUpdate` cannot do this: it unions ACL entries instead of replacing them.
+  - **Created by another program** (e.g. the `security` CLI, or another copy of che-keychain at a different path), or an item whose ACL cannot be attributed → **refused before the dialog opens**, printing the exact `che-keychain unset --service 'S' --account 'A'` command (shell-quoted) and a warning that it deletes that program's secret. Rationale: `SecItemUpdate` would succeed but leave the new secret inside an item another program manages — and with `--daemon` it silently appended an allow-all ACL entry to that item (the round-1 fix, reverted). Replacing another program's secret is destructive, so it is an explicit `unset`, never a side effect of `set`. Such items are prompt-on-read for other programs, not unreadable; the constraint is ownership.
+  - Root cause of the original -25299, pinned down by probe: `SecItemDelete` — by query or by `kSecMatchItemList` — answers `errSecInvalidOwnerEdit` (-25244) on an item another program created, and the old `save()` discarded that status before `SecItemAdd`. `SecKeychainItemDelete(ref)` deletes such items fine; `unset` now uses it.
+  - Ownership is decided fail-closed from the item's decrypt ACL: any trusted-application list that does not contain this binary's real path → foreign; only allow-all entries → ours only if one carries the label `service/account` that `--daemon` writes; unreadable ACL → refused.
+  - `set-pair` checks both accounts before the dialog, so a refusal can no longer follow a write of the first account.
+  - More than one item matching `service/account` (e.g. across keychains) is refused as ambiguous instead of writing to whichever one the API picks.
+- `unset` deletes each matching item by reference (`SecKeychainItemDelete`), so it also removes items created by other programs — previously the query-based loop stopped at the first `-25244` and left the rest untouched without a word. Should a delete still answer `-25244`, the sweep continues and the first such item is reported afterwards.
+- `-25244` error hint corrected: it now says the item belongs to another program and names `che-keychain unset` as the remedy (the old text wrongly claimed the ACL could not be changed).
 
 ## [0.2.0] — 2026-06-09
 

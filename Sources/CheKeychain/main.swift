@@ -43,6 +43,13 @@ do {
 
 switch cmd {
 case .set(let a):
+    // Refuse before the user types anything: a foreign/ambiguous item cannot be
+    // written to, so the dialog would only collect a secret to throw away.
+    do {
+        try KeychainStore.preflight(service: a.service, accounts: [a.account], daemon: a.daemon)
+    } catch {
+        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+    }
     let title = a.label ?? "Enter credential"
     let field = PromptField(name: a.account, label: a.label ?? a.account, isSecure: a.secure)
     let result = PromptDialog.run(
@@ -68,6 +75,13 @@ case .set(let a):
     }
 
 case .setPair(let a):
+    // Both accounts are checked before the dialog so a refusal on the second
+    // can never follow a write of the first (no half-stored credential pair).
+    do {
+        try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount], daemon: false)
+    } catch {
+        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+    }
     let visibleLabel = a.visibleLabel ?? a.visibleAccount
     let secureLabel  = a.secureLabel  ?? a.secureAccount
     let title = a.title ?? "Enter credentials for \(a.service)"
