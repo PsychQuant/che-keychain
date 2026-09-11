@@ -39,19 +39,22 @@ enum AppVersion {
       reports every item it could not remove.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
-      reads the clipboard's text and, once the value is stored and verified,
-      removes it from this Mac's clipboard (a clipboard manager or Universal
-      Clipboard may keep a copy; on failure the clipboard is left as is);
-      `--stdin` reads the first non-blank line from a pipe and stops at the
-      line break without waiting for EOF (a terminal is refused — interactive
-      paste is what bracketed-paste mangles; more than 64 KiB without a line
-      break is refused). All sources trim surrounding whitespace and line
-      breaks. Neither non-dialog source shows the dialog, so the destination
-      is printed on stderr before the store; --secure/--label/--explain are
-      refused with them. The value never enters argv or stdout. Every store —
-      all three sources, and set-pair — is read back and compared: an empty or
-      different value is removed again (a rotation gets its previous value
-      back); a value that cannot be read back is left in place and reported.
+      shows a confirmation dialog with the destination (no input field — the
+      paste problem lived there), then takes the clipboard's text and, once the
+      value is stored and verified, removes it from this Mac's clipboard if it
+      has not changed meanwhile (a clipboard manager or Universal Clipboard may
+      keep a copy; on failure it is left as is); `--stdin` reads exactly one line
+      from a pipe and stops at the line break without waiting for EOF (a
+      terminal, more than one line of content, invalid UTF-8, or >64 KiB without
+      a line break are refused, never truncated) and prints the destination on
+      stderr instead of a dialog — the caller already holds the value.
+      --secure/--label/--explain are refused with both. All sources drop
+      surrounding whitespace and line breaks; a whitespace-only value is
+      refused everywhere, set-pair included. Every store is read back and
+      compared: an empty or different value is removed again (a rotation gets
+      its previous value re-stored and read back, or the report says the slot
+      is now empty); an unreadable or ambiguous read leaves the item and says
+      whether it replaced a previous value.
 
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't
@@ -84,7 +87,8 @@ enum AppVersion {
       # a headless launchd reader — any process could then read it)
       che-keychain set --service ntu-cool-canvas --account default --from-clipboard
 
-      # Automation: pipe it (never a terminal)
+      # Automation: pipe exactly one line (never a terminal). Note `pbpaste` leaves
+      # the token on the clipboard — prefer --from-clipboard, or clear it after.
       pbpaste | che-keychain set --service ntu-cool-canvas --account default --stdin
 
       # Rotate a daemon-readable secret (0.3.0+: an existing allow-all item is

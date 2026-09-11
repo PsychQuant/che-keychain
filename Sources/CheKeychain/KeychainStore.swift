@@ -3,19 +3,31 @@ import Foundation
 import Security
 
 enum MismatchReason: String {
-    case unreadable, empty, differs, ambiguous
+    /// The item is not there at all after a successful write status.
+    case missing
+    /// The item is there but its value could not be read (locked keychain, or a prompt would be needed).
+    case unreadable
+    case empty, differs
+    /// More than one item matched, so the written one could not be identified.
+    case ambiguous
 }
 
 enum MismatchCleanup: Equatable {
-    /// The just-written item was deleted by reference.
+    /// Fresh store: the just-written item was deleted by reference; the slot is empty as before.
     case removed
-    /// Rotation: the just-written item was deleted and the previous value re-stored.
+    /// Rotation: the just-written item was deleted and the previous value re-stored and read back.
     case restoredPrevious
-    /// The item was deliberately left in place (unreadable / ambiguous: nothing
-    /// proves it is bad, and deleting could destroy a good secret).
-    case leftInPlace
-    /// Deletion was attempted and refused (OSStatus).
+    /// Rotation: the just-written item was deleted, but the previous value could NOT be put back
+    /// (it was not readable before the delete, or re-adding it failed / did not verify). The slot is empty.
+    case removedPreviousLost(restoreStatus: OSStatus?)
+    /// The item was left in place (unreadable / ambiguous: nothing proves it is bad).
+    /// `previousReplaced` = this was a rotation, so the previous value is gone and the
+    /// unverified new one now occupies the slot.
+    case leftInPlace(previousReplaced: Bool)
+    /// Deletion was attempted and refused (OSStatus); the unverified item remains.
     case removalFailed(OSStatus)
+    /// Nothing to clean up: the write reported success but no item exists.
+    case nothingStored
 }
 
 enum KeychainError: Error, LocalizedError {
@@ -140,23 +152,36 @@ enum KeychainError: Error, LocalizedError {
             \(list)
             """
         case .emptyValue(let svc, let acct):
-            return "refusing to store an empty value for \(svc)/\(acct) — nothing was written."
+            return "refusing to store an empty (or whitespace-only) value for \(svc)/\(acct) — nothing was written."
         case .storedValueMismatch(let svc, let acct, let reason, let cleanup):
             let what: String
             switch reason {
-            case .unreadable: what = "the value could not be read back after writing (keychain locked, or a prompt would have been needed)"
+            case .missing:    what = "the write reported success but no item exists at that service/account afterwards"
+            case .unreadable: what = "the item is there but its value could not be read back (keychain locked, or a prompt would have been needed)"
             case .empty:      what = "the stored value read back empty"
             case .differs:    what = "the stored value read back differs from what was written"
             case .ambiguous:  what = "more than one item matched when reading back, so the written item could not be identified"
             }
+            func status(_ st: OSStatus) -> String {
+                let text = (SecCopyErrorMessageString(st, nil) as String?) ?? ""
+                return "OSStatus \(st)\(text.isEmpty ? "" : ": \(text)")"
+            }
             let done: String
             switch cleanup {
-            case .removed:           done = "The just-written item was removed again; nothing unverified is left behind."
-            case .restoredPrevious:  done = "The just-written item was removed and the previous value was re-stored."
-            case .leftInPlace:       done = "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. Unlock the keychain and run `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, then retry the store."
+            case .removed:
+                done = "The just-written item was removed again; the slot is empty, as it was before."
+            case .restoredPrevious:
+                done = "The just-written item was removed and the previous value was re-stored and read back."
+            case .removedPreviousLost(let st):
+                done = "The just-written item was removed, and the PREVIOUS value could NOT be put back\(st.map { " (re-add: \(status($0)))" } ?? " (it could not be read before the replace)"). The slot is now EMPTY: store the secret again."
+            case .leftInPlace(let replaced):
+                done = replaced
+                    ? "The new item was left in place but is UNVERIFIED, and it has REPLACED the previous value (which was re-stored only if it could be read). Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, and store the secret again to be sure."
+                    : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, then retry the store."
             case .removalFailed(let st):
-                let text = (SecCopyErrorMessageString(st, nil) as String?) ?? ""
-                done = "Removing the just-written item FAILED (OSStatus \(st)\(text.isEmpty ? "" : ": \(text)")) — an unverified item may remain: che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))"
+                done = "Removing the just-written item FAILED (\(status(st))) — an unverified item remains: che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))"
+            case .nothingStored:
+                done = "Nothing is stored. Retry; if it persists, the keychain the item was written to may not be in the search list."
             }
             return """
             stored value mismatch for \(svc)/\(acct): \(what).
@@ -285,16 +310,27 @@ enum KeychainStore {
     /// SecKeychainItemDelete(ref) deletes it. SecItemUpdate with kSecAttrAccess
     /// unions ACL entries (5→7→9…), it never replaces them.
     static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
-        guard !value.isEmpty else { throw KeychainError.emptyValue(service: service, account: account) }
+        // Empty or whitespace-only is refused for EVERY caller (set's three
+        // sources and set-pair): such an item looks stored but cannot
+        // authenticate and blocks the next write — the #6 failure class.
+        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw KeychainError.emptyValue(service: service, account: account)
+        }
         let found = try inspect(service: service, account: account)
         try refusal(for: found.existing, service: service, account: account)
         switch found.existing {
         case .none:
             try add(service: service, account: account, value: value, daemon: daemon)
-            if let why = readBackMismatch(service: service, account: account, expected: Data(value.utf8)) {
+            let rb = readBack(service: service, account: account, expected: Data(value.utf8))
+            if let why = rb.mismatch {
                 // Only a provably bad item is removed; an unreadable/ambiguous read
                 // says nothing about the item, and deleting could destroy a good one.
-                let cleanup: MismatchCleanup = (why == .empty || why == .differs) ? deleteWritten(service: service, account: account) : .leftInPlace
+                let cleanup: MismatchCleanup
+                switch why {
+                case .empty, .differs: cleanup = deleteWritten(rb.item)
+                case .missing:         cleanup = .nothingStored
+                case .unreadable, .ambiguous: cleanup = .leftInPlace(previousReplaced: false)
+                }
                 throw KeychainError.storedValueMismatch(service: service, account: account, reason: why, cleanup: cleanup)
             }
         case .own:
@@ -305,66 +341,88 @@ enum KeychainStore {
     }
 
     #if DEBUG
-    /// Test seam (#6, debug builds only): replaces the real read-back so tests
-    /// can simulate a keychain that returns nothing / empty / a different value.
+    /// Test seams (#6, debug builds only). `readBackOverride` replaces the real
+    /// read-back (nil = item missing; empty / other data as returned);
+    /// `readBackReasonOverride` forces a reason the override cannot express
+    /// (`.unreadable`, `.ambiguous`); `deleteWrittenOverride` forces the
+    /// cleanup outcome so the `.removalFailed` path is testable.
     static var readBackOverride: ((String, String) -> Data?)?
+    static var readBackReasonOverride: MismatchReason?
+    static var deleteWrittenOverride: MismatchCleanup?
     #endif
 
     /// Run `body` with keychain user interaction disabled: our own items
     /// decrypt without a prompt, and a prompt would hang a headless caller.
+    /// The previous state is restored only if it could be read; otherwise
+    /// interaction stays disabled (fail closed for a CLI that is about to exit).
     private static func withoutInteraction<T>(_ body: () -> T) -> T {
-        var wasAllowed: DarwinBoolean = true
-        _ = SecKeychainGetUserInteractionAllowed(&wasAllowed)
+        var wasAllowed: DarwinBoolean = false
+        let probed = SecKeychainGetUserInteractionAllowed(&wasAllowed) == errSecSuccess
         _ = SecKeychainSetUserInteractionAllowed(false)
-        defer { _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) }
+        defer { if probed { _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) } }
         return body()
     }
 
-    /// Locate the local (non-synchronized) file-keychain item at service/account.
-    /// Returns nil when there is none, and throws ambiguity when there is more
-    /// than one — verification must never read a different item than it wrote.
-    private static func writtenItem(service: String, account: String) -> (item: SecKeychainItem?, ambiguous: Bool) {
-        let q: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecMatchLimit as String: kSecMatchLimitAll,
-            kSecReturnRef as String: true
-        ]
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let refs = out as? [AnyObject] else { return (nil, false) }
-        guard refs.count == 1 else { return (nil, refs.count > 1) }
-        guard CFGetTypeID(refs[0]) == SecKeychainItemGetTypeID() else { return (nil, false) }
-        return (refs[0] as! SecKeychainItem, false)
-    }
+    private struct ReadBack { let mismatch: MismatchReason?; let item: SecKeychainItem? }
 
-    /// Post-write read-back (#6). nil = the stored value is byte-identical.
-    private static func readBackMismatch(service: String, account: String, expected: Data) -> MismatchReason? {
+    /// Post-write read-back (#6). Looks the item up with the same scope as
+    /// `inspect` (synchronizable twins included) so that verification looks
+    /// where the write went; exactly one file-keychain item must match.
+    private static func readBack(service: String, account: String, expected: Data) -> ReadBack {
         #if DEBUG
-        if let o = readBackOverride {
-            guard let d = o(service, account) else { return .unreadable }
-            return d.isEmpty ? .empty : (d == expected ? nil : .differs)
-        }
+        if let forced = readBackReasonOverride { return ReadBack(mismatch: forced, item: nil) }
         #endif
         return withoutInteraction {
-            let found = writtenItem(service: service, account: account)
-            if found.ambiguous { return .ambiguous }
-            guard let item = found.item else { return .unreadable }
-            let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item], kSecReturnData as String: true]
+            let q: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnRef as String: true
+            ]
             var out: CFTypeRef?
-            guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return .unreadable }
-            if d.isEmpty { return .empty }
-            return d == expected ? nil : .differs
+            let st = SecItemCopyMatching(q as CFDictionary, &out)
+            if st == errSecItemNotFound { return ReadBack(mismatch: .missing, item: nil) }
+            guard st == errSecSuccess, let refs = out as? [AnyObject] else { return ReadBack(mismatch: .unreadable, item: nil) }
+            if refs.isEmpty { return ReadBack(mismatch: .missing, item: nil) }
+            guard refs.count == 1 else { return ReadBack(mismatch: .ambiguous, item: nil) }
+            guard CFGetTypeID(refs[0]) == SecKeychainItemGetTypeID() else { return ReadBack(mismatch: .unreadable, item: nil) }
+            let item = refs[0] as! SecKeychainItem
+            let data: Data?
+            #if DEBUG
+            if let o = readBackOverride {
+                // The seam replaces only the bytes read; the lookup stays real so
+                // cleanup operates on the actual item.
+                guard let d = o(service, account) else { return ReadBack(mismatch: .missing, item: item) }
+                data = d
+            } else {
+                data = readValue(of: item)
+            }
+            #else
+            data = readValue(of: item)
+            #endif
+            guard let d = data else { return ReadBack(mismatch: .unreadable, item: item) }
+            if d.isEmpty { return ReadBack(mismatch: .empty, item: item) }
+            return ReadBack(mismatch: d == expected ? nil : .differs, item: item)
         }
     }
 
-    /// Delete the item that was just written, by reference, with prompts
-    /// disabled. Never the broad `unset` sweep: that would also take other
-    /// programs' items and iCloud twins (#5 policy).
-    private static func deleteWritten(service: String, account: String) -> MismatchCleanup {
-        withoutInteraction {
-            let found = writtenItem(service: service, account: account)
-            guard let item = found.item else { return .removalFailed(errSecItemNotFound) }
+    private static func readValue(of item: SecKeychainItem) -> Data? {
+        let rq: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchItemList as String: [item], kSecReturnData as String: true]
+        var data: CFTypeRef?
+        guard SecItemCopyMatching(rq as CFDictionary, &data) == errSecSuccess else { return nil }
+        return data as? Data
+    }
+
+    /// Delete the item the read-back identified (the very reference it read),
+    /// with prompts disabled. Never the broad `unset` sweep (#5 policy).
+    private static func deleteWritten(_ item: SecKeychainItem?) -> MismatchCleanup {
+        #if DEBUG
+        if let forced = deleteWrittenOverride { return forced }
+        #endif
+        guard let item = item else { return .removalFailed(errSecItemNotFound) }
+        return withoutInteraction {
             let st = SecKeychainItemDelete(item)
             return st == errSecSuccess ? .removed : .removalFailed(st)
         }
@@ -404,18 +462,32 @@ enum KeychainStore {
             throw KeychainError.replaceFailed(service: service, account: account, addStatus: ast, restored: restored)
         }
         // Verify while the previous value is still in hand (it is wiped on exit),
-        // so a provably bad rotation can put the old secret back.
-        if let why = readBackMismatch(service: service, account: account, expected: Data(value.utf8)) {
-            var cleanup: MismatchCleanup = .leftInPlace
-            if why == .empty || why == .differs {
-                cleanup = deleteWritten(service: service, account: account)
-                if cleanup == .removed, let o = old,
-                   addRaw(service: service, account: account, data: o, access: nil, keychain: keychain) == errSecSuccess {
-                    cleanup = .restoredPrevious
-                }
+        // so a provably bad rotation can put the old secret back — and the
+        // report says exactly which of the outcomes happened.
+        let rb = readBack(service: service, account: account, expected: Data(value.utf8))
+        if let why = rb.mismatch {
+            let cleanup: MismatchCleanup
+            switch why {
+            case .empty, .differs:
+                let del = deleteWritten(rb.item)
+                cleanup = del == .removed ? restorePrevious(old, service: service, account: account, keychain: keychain) : del
+            case .missing:
+                cleanup = restorePrevious(old, service: service, account: account, keychain: keychain)
+            case .unreadable, .ambiguous:
+                cleanup = .leftInPlace(previousReplaced: true)
             }
             throw KeychainError.storedValueMismatch(service: service, account: account, reason: why, cleanup: cleanup)
         }
+    }
+
+    /// Re-add the previous value (prompt-on-read) after a failed rotation and
+    /// read it back; anything short of a verified restore is reported as lost.
+    private static func restorePrevious(_ old: Data?, service: String, account: String, keychain: SecKeychain?) -> MismatchCleanup {
+        guard let o = old, !o.isEmpty else { return .removedPreviousLost(restoreStatus: nil) }
+        let st = addRaw(service: service, account: account, data: o, access: nil, keychain: keychain)
+        guard st == errSecSuccess else { return .removedPreviousLost(restoreStatus: st) }
+        return readBack(service: service, account: account, expected: o).mismatch == nil
+            ? .restoredPrevious : .removedPreviousLost(restoreStatus: errSecDecode)
     }
 
     private static func add(service: String, account: String, value: String, daemon: Bool) throws {

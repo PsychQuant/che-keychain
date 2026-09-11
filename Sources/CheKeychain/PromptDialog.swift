@@ -59,6 +59,22 @@ enum PromptDialog {
         return .accept(values: values)
     }
 
+    /// Confirmation-only alert (no input field) for `--from-clipboard` (#6): the
+    /// user still sees the destination before anything is read or stored —
+    /// the paste problem was in the input field, not in the dialog itself.
+    static func confirm(title: String, destination: String, explain: String?) -> Bool {
+        let app = NSApplication.shared
+        if app.activationPolicy() != .regular { app.setActivationPolicy(.regular) }
+        app.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = buildInformativeText(destination: destination, explain: explain)
+        alert.addButton(withTitle: "Store")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     // MARK: - Building blocks (factored out for testability)
 
     static func buildInformativeText(destination: String, explain: String?) -> String {

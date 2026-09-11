@@ -17,6 +17,8 @@ enum InputSourceError: Error, LocalizedError {
     case stdinIsTerminal
     case emptyStdin
     case stdinTooLong(limit: Int)
+    case stdinMultiline
+    case stdinNotUTF8
 
     var errorDescription: String? {
         switch self {
@@ -28,17 +30,29 @@ enum InputSourceError: Error, LocalizedError {
             return "nothing (or only whitespace) was read from stdin — nothing stored."
         case .stdinTooLong(let limit):
             return "the first line of stdin exceeds \(limit) bytes without a line break — refusing to store a truncated value."
+        case .stdinMultiline:
+            return "stdin carried more than one line of content — refusing to store only the first line. Pipe exactly one line (a multi-line secret is not supported)."
+        case .stdinNotUTF8:
+            return "stdin is not valid UTF-8 — refusing to store a value that would be altered on decoding."
         }
     }
 }
 
 enum InputSource {
-    /// Read the clipboard's plain-text string, trimmed of surrounding
-    /// whitespace and line breaks (pastes usually carry a trailing newline).
+    /// The one normalization rule every `set` / `set-pair` value goes through,
+    /// whatever its source: surrounding whitespace and line breaks are dropped
+    /// (pastes usually carry a trailing newline), nothing inside is touched.
+    /// Returns nil when nothing is left — whitespace-only counts as empty.
+    static func normalize(_ raw: String) -> String? {
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty ? nil : v
+    }
+
+    /// Read the clipboard's plain-text string, normalized.
     static func readClipboard(pasteboard: NSPasteboard = .general) throws -> String {
-        guard let raw = pasteboard.string(forType: .string) else { throw InputSourceError.emptyClipboard }
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw InputSourceError.emptyClipboard }
+        guard let raw = pasteboard.string(forType: .string), let value = normalize(raw) else {
+            throw InputSourceError.emptyClipboard
+        }
         return value
     }
 
@@ -55,37 +69,40 @@ enum InputSource {
     /// cleared. A clipboard manager or Universal Clipboard may keep a copy —
     /// this cannot reach those.
     @discardableResult
-    static func clearClipboard(pasteboard: NSPasteboard = .general, ifUnchangedSince changeCount: Int? = nil) -> Bool {
-        if let cc = changeCount, pasteboard.changeCount != cc { return false }
+    static func clearClipboard(pasteboard: NSPasteboard = .general, ifUnchangedSince changeCount: Int) -> Bool {
+        guard pasteboard.changeCount == changeCount else { return false }
         pasteboard.clearContents()
         return true
     }
 
     static let stdinLimit = 64 * 1024
 
-    /// Read the first non-blank line of stdin, trimmed. Reads incrementally and
-    /// stops at the first line break — it does NOT wait for EOF, so a writer
-    /// that keeps the pipe open (ssh session, a wrapper, a FIFO) cannot hang
-    /// us. More than `stdinLimit` bytes without a line break is refused rather
-    /// than truncated. A terminal is refused: the whole point is to bypass
-    /// interactive paste.
+    /// Read exactly one line of content from stdin. Reads incrementally and
+    /// stops at the first line break (LF or CR) — it does NOT wait for EOF, so
+    /// a writer that keeps the pipe open cannot hang us. Refused rather than
+    /// guessed: a terminal (interactive paste is what bracketed-paste mangles),
+    /// more than `stdinLimit` bytes without a line break, invalid UTF-8, and
+    /// any further non-blank content that had already arrived after the line.
     static func readStdin(handle: FileHandle = .standardInput, isTTY: Bool = isatty(0) != 0) throws -> String {
         guard !isTTY else { throw InputSourceError.stdinIsTerminal }
+        let blank: (UInt8) -> Bool = { $0 == 0x0a || $0 == 0x0d || $0 == 0x20 || $0 == 0x09 }
+        let isBreak: (UInt8) -> Bool = { $0 == 0x0a || $0 == 0x0d }
         var buffer = Data()
         while true {
             let chunk = handle.availableData          // blocks until some bytes or EOF
             if chunk.isEmpty { break }                // EOF
             buffer.append(chunk)
-            // Skip leading blank lines: the first line that has content counts.
-            let stripped = buffer.drop { $0 == 0x0a || $0 == 0x0d || $0 == 0x20 || $0 == 0x09 }
-            if stripped.contains(0x0a) { break }
-            if buffer.count > stdinLimit { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
+            let stripped = buffer.drop(while: blank)  // leading blank lines do not count
+            if stripped.contains(where: isBreak) { break }
+            if stripped.count > stdinLimit { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
         }
-        let stripped = buffer.drop { $0 == 0x0a || $0 == 0x0d || $0 == 0x20 || $0 == 0x09 }
-        let firstLine = stripped.prefix { $0 != 0x0a }
+        let stripped = buffer.drop(while: blank)
+        let firstLine = stripped.prefix { !isBreak($0) }
         guard firstLine.count <= stdinLimit else { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
-        let value = String(decoding: firstLine, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { throw InputSourceError.emptyStdin }
+        let rest = stripped.dropFirst(firstLine.count)
+        guard !rest.contains(where: { !blank($0) }) else { throw InputSourceError.stdinMultiline }
+        guard let decoded = String(bytes: firstLine, encoding: .utf8) else { throw InputSourceError.stdinNotUTF8 }
+        guard let value = normalize(decoded) else { throw InputSourceError.emptyStdin }
         return value
     }
 }

@@ -1,6 +1,6 @@
 # che-keychain
 
-A trust-isolated credential prompt for the macOS keychain. The user types into a **native dialog rendered by this signed binary** — the caller (LLM, MCP server, shell script) never observes the input, only learns success / failure.
+A trust-isolated credential prompt for the macOS keychain. The user types into a **native dialog rendered by this signed binary** — the caller (LLM, MCP server, shell script) never observes the input, only learns success / failure. Two more sources exist since 0.3.0: `--from-clipboard` (a confirmation dialog shows the destination, the value comes from the clipboard) and `--stdin` (for automation; the caller supplies the value, so nothing is hidden from it). Every store is read back and verified.
 
 ## Why
 
@@ -44,6 +44,17 @@ che-keychain set-pair --service che-transport-tdx \
 che-keychain has --service my-api --account token   # exit 0 if present
 
 # Remove
+# Paste-free: copy the token, confirm the destination in a dialog; the value is
+# removed from this Mac's clipboard once the store is verified
+che-keychain set --service my-api --account token --from-clipboard
+
+# Automation: exactly one line from a pipe (a terminal is refused); the destination
+# is printed on stderr; nothing is hidden from the caller here — it holds the value
+printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --stdin
+
+# Every store is read back and compared; an empty or whitespace-only value is
+# refused; a garbled store is removed again (a rotation gets its previous value back).
+
 che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
@@ -61,8 +72,8 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 
 Key properties:
 
-- **Caller never sees the value** — typed input is read in this binary's process via AppKit text fields. It is not piped through stdin / args / env from the caller. An LLM driving the caller (a tool that runs this CLI) cannot observe the input.
-- **Dialog shows the destination** — `service` and `account` are rendered in the alert's informative text so the user can verify a malicious caller isn't redirecting writes to a misleading key.
+- **Caller never sees the value** (dialog and `--from-clipboard`) — the value is read in this binary's process from an AppKit text field or from the pasteboard; it is not passed through args / env from the caller. `--stdin` is the documented exception: the caller pipes the value in, so it already holds it — use it only from automation you trust.
+- **Dialog shows the destination** — `service` and `account` are rendered in the alert's informative text (the input dialog, and the confirmation dialog `--from-clipboard` shows) so the user can verify a malicious caller isn't redirecting writes to a misleading key. `--stdin` prints the destination on stderr instead; a caller that swallows stderr can hide it, which is why `--stdin` is for trusted automation only.
 - **Storage is local** — items go to `login.keychain-db`, not iCloud Keychain. They don't appear in Safari's Passwords app; only in Keychain Access.app.
 - **Identifiers are sanity-checked** — empty / control-character service / account names are rejected.
 

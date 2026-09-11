@@ -282,6 +282,9 @@ final class KeychainStoreTests: XCTestCase {
     // MARK: - Read-back verification (#6)
 
     func testSaveRejectsEmptyValue() throws {
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "e", value: " \n\t")) { err in
+            guard case KeychainError.emptyValue = err else { return XCTFail("whitespace-only: expected .emptyValue, got \(err)") }
+        }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "e", value: "")) { err in
             guard case KeychainError.emptyValue = err else { return XCTFail("expected .emptyValue, got \(err)") }
         }
@@ -291,8 +294,14 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(KeychainStore.has(service: service, account: "e"))
     }
 
+    private func resetSeams() {
+        KeychainStore.readBackOverride = nil
+        KeychainStore.readBackReasonOverride = nil
+        KeychainStore.deleteWrittenOverride = nil
+    }
+
     func testSaveVerifiesStoredValueAndCleansUpHonestly() throws {
-        defer { KeychainStore.readBackOverride = nil }
+        defer { resetSeams() }
         // A provably bad item (empty / different) is removed by reference.
         for (name, fake) in [("empty", Data()), ("differs", Data("other".utf8))] {
             KeychainStore.readBackOverride = { _, _ in fake }
@@ -307,29 +316,63 @@ final class KeychainStoreTests: XCTestCase {
             XCTAssertFalse(KeychainStore.has(service: service, account: name), "\(name): the unverified item must be removed")
         }
         // An unreadable read-back proves nothing about the item: it stays, and the message says so.
-        KeychainStore.readBackOverride = { _, _ in nil }
+        KeychainStore.readBackOverride = nil
+        KeychainStore.readBackReasonOverride = .unreadable
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "locked", value: "v")) { err in
             guard case KeychainError.storedValueMismatch(_, _, let reason, let cleanup) = err else { return XCTFail("got \(err)") }
             XCTAssertEqual(reason, .unreadable)
-            XCTAssertEqual(cleanup, .leftInPlace)
+            XCTAssertEqual(cleanup, .leftInPlace(previousReplaced: false))
         }
         XCTAssertTrue(KeychainStore.has(service: service, account: "locked"), "an unreadable item is not deleted")
-        KeychainStore.readBackOverride = nil
+        resetSeams()
         XCTAssertEqual(try readOwn(account: "locked"), "v", "and it was in fact stored correctly")
+        // Missing after a successful write: reported as nothing stored.
+        KeychainStore.readBackOverride = { _, _ in nil }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "gone", value: "v")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, let reason, let cleanup) = err else { return XCTFail("got \(err)") }
+            XCTAssertEqual(reason, .missing); XCTAssertEqual(cleanup, .nothingStored)
+        }
+        // Ambiguous: left in place. Removal refused: reported with the OSStatus.
+        resetSeams(); KeychainStore.readBackReasonOverride = .ambiguous
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "amb", value: "v")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .ambiguous, .leftInPlace(previousReplaced: false)) = err else { return XCTFail("got \(err)") }
+        }
+        resetSeams(); KeychainStore.readBackOverride = { _, _ in Data("x".utf8) }; KeychainStore.deleteWrittenOverride = .removalFailed(-25244)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "stuck", value: "v")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .differs, .removalFailed(-25244)) = err else { return XCTFail("got \(err)") }
+            let msg = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(msg.contains("che-keychain unset --service '\(service)' --account 'stuck'"), msg)
+        }
     }
 
     func testRotationMismatchRestoresThePreviousValue() throws {
-        defer { KeychainStore.readBackOverride = nil }
+        defer { resetSeams() }
         try KeychainStore.save(service: service, account: "own", value: "v1")
-        KeychainStore.readBackOverride = { _, _ in Data("garbage".utf8) }
+        // The override must let the restore's own read-back succeed: mismatch
+        // only when the expected value is the NEW one.
+        var calls = 0
+        KeychainStore.readBackOverride = { _, _ in calls += 1; return calls == 1 ? Data("garbage".utf8) : Data("v1".utf8) }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
             guard case KeychainError.storedValueMismatch(_, _, let reason, let cleanup) = err else { return XCTFail("got \(err)") }
             XCTAssertEqual(reason, .differs)
             XCTAssertEqual(cleanup, .restoredPrevious)
         }
-        KeychainStore.readBackOverride = nil
+        resetSeams()
         XCTAssertEqual(try readOwn(account: "own"), "v1", "the previous secret survives a failed rotation")
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own)
+    }
+
+    func testRotationUnreadableReadBackSaysThePreviousValueWasReplaced() throws {
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        KeychainStore.readBackReasonOverride = .unreadable
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .unreadable, .leftInPlace(previousReplaced: true)) = err else { return XCTFail("got \(err)") }
+            let msg = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(msg.contains("REPLACED the previous value"), msg)
+        }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "own"), "v2", "the new value is in place (unverified at the time)")
     }
 
     func testSaveReadsBackWhatItWroteInBothModes() throws {

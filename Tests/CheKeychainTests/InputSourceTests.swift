@@ -14,10 +14,30 @@ final class InputSourceTests: XCTestCase {
 
     func testStdinReadsOneLineAndTrims() throws {
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "  tok3n \r\n"), isTTY: false), "tok3n")
-        // Only the first line counts; a second line is not part of the value.
-        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "first\nsecond\n"), isTTY: false), "first")
-        // No trailing newline at all is fine too.
+        // No trailing newline at all is fine too; CR-only line endings count as breaks.
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "bare"), isTTY: false), "bare")
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "cr\r"), isTTY: false), "cr")
+        // Trailing blank lines after the value are fine.
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "one\n\n  \n"), isTTY: false), "one")
+    }
+
+    func testStdinRefusesMoreThanOneLineOfContent() {
+        XCTAssertThrowsError(try InputSource.readStdin(handle: pipe(with: "first\nsecond\n"), isTTY: false)) { err in
+            guard case InputSourceError.stdinMultiline = err else { return XCTFail("got \(err)") }
+        }
+    }
+
+    func testStdinRefusesInvalidUTF8() throws {
+        let p = Pipe(); p.fileHandleForWriting.write(Data([0x74, 0x6f, 0x6b, 0xff, 0x0a])); p.fileHandleForWriting.closeFile()
+        XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
+            guard case InputSourceError.stdinNotUTF8 = err else { return XCTFail("got \(err)") }
+        }
+    }
+
+    func testNormalizeIsTheOneRuleForEverySource() {
+        XCTAssertEqual(InputSource.normalize("  a b \n"), "a b")
+        XCTAssertNil(InputSource.normalize(" \n\t"))
+        XCTAssertNil(InputSource.normalize(""))
     }
 
     func testStdinReturnsAtTheLineBreakWithoutWaitingForEOF() throws {
@@ -36,7 +56,7 @@ final class InputSourceTests: XCTestCase {
     }
 
     func testStdinSkipsLeadingBlankLines() throws {
-        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "\n  \ntok\nnext\n"), isTTY: false), "tok")
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "\n  \ntok\n"), isTTY: false), "tok")
     }
 
     func testStdinRefusesOverlongLine() throws {

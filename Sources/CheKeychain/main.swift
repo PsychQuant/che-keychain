@@ -54,6 +54,7 @@ case .set(let a):
     // skip the "Storing to:" line the user would otherwise verify; the value
     // still never enters argv or stdout.
     let value: String
+    var clipboardChangeCountAtRead: Int? = nil
     switch a.source {
     case .dialog:
         let title = a.label ?? "Enter credential"
@@ -69,24 +70,41 @@ case .set(let a):
             emit("Cancelled.", to: true)
             exit(2)
         case .accept(let values):
-            // Same trim as the other sources, so the same secret stores the same
-            // bytes however it was entered; whitespace-only counts as empty.
-            guard let v = values[a.account]?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else {
+            // One normalization rule for every source (InputSource.normalize):
+            // surrounding whitespace/line breaks dropped, whitespace-only = empty.
+            guard let v = InputSource.normalize(values[a.account] ?? "") else {
                 die("empty input — nothing stored.", exitCode: 1)
             }
             value = v
         }
-    case .clipboard, .stdin:
-        // No dialog, so no "Storing to:" line to verify — print the destination
-        // instead, before anything is written.
-        emit("→ storing to service=\(sanitize(a.service)) account=\(sanitize(a.account)) (from \(a.source == .clipboard ? "clipboard" : "stdin")\(a.daemon ? ", daemon-readable" : ""))", to: true)
+    case .clipboard:
+        // The destination is still confirmed by the user in a dialog — just
+        // without an input field, which is where the paste problem lived.
+        let destination = "service=\(a.service) account=\(a.account)\(a.daemon ? "  (daemon-readable: any process can read it without a prompt)" : "")"
+        guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination,
+                                   explain: "The value is taken from the clipboard as is (surrounding whitespace removed) and removed from this Mac's clipboard once stored and verified.") else {
+            emit("Cancelled.", to: true)
+            exit(2)
+        }
+        let before = InputSource.clipboardChangeCount()
         do {
-            value = a.source == .clipboard ? try InputSource.readClipboard() : try InputSource.readStdin()
+            value = try InputSource.readClipboard()
+        } catch {
+            die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+        // If the clipboard moved during the read, the bytes we hold may not be
+        // what the user meant; do not clear anything later.
+        clipboardChangeCountAtRead = InputSource.clipboardChangeCount() == before ? before : nil
+    case .stdin:
+        // No dialog: the caller already holds the value, so there is nothing to
+        // redirect that it does not already have. Say where it will go.
+        emit("→ will store to service=\(sanitize(a.service)) account=\(sanitize(a.account)) (from stdin\(a.daemon ? ", daemon-readable" : ""))", to: true)
+        do {
+            value = try InputSource.readStdin()
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
-    let clipboardChangeCount = a.source == .clipboard ? InputSource.clipboardChangeCount() : nil
     do {
         try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
     } catch {
@@ -97,7 +115,7 @@ case .set(let a):
     // clipboard — and only if the clipboard still holds what we read.
     var origin = a.source == .stdin ? " (from stdin)" : ""
     if a.source == .clipboard {
-        origin = InputSource.clearClipboard(ifUnchangedSince: clipboardChangeCount)
+        origin = InputSource.clearClipboard(ifUnchangedSince: clipboardChangeCountAtRead ?? -1)
             ? " (from clipboard; removed from this Mac's clipboard)"
             : " (from clipboard; clipboard changed meanwhile, left as is)"
     }
@@ -132,10 +150,10 @@ case .setPair(let a):
         emit("Cancelled.", to: true)
         exit(2)
     case .accept(let values):
-        guard let v = values[a.visibleAccount], !v.isEmpty else {
+        guard let v = InputSource.normalize(values[a.visibleAccount] ?? "") else {
             die("\(a.visibleAccount) is empty — nothing stored.", exitCode: 1)
         }
-        guard let s = values[a.secureAccount], !s.isEmpty else {
+        guard let s = InputSource.normalize(values[a.secureAccount] ?? "") else {
             die("\(a.secureAccount) is empty — nothing stored.", exitCode: 1)
         }
         do {
