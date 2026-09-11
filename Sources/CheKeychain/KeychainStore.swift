@@ -236,7 +236,7 @@ enum KeychainError: Error, LocalizedError {
         case .storedValueMismatch(let svc, let acct, let reason, let cleanup):
             let what: String
             switch reason {
-            case .missing:    what = "the write reported success but no item exists at that service/account afterwards"
+            case .missing:    what = "the write reported success but no item exists at that service/account afterwards (if the write landed in a keychain outside the search list, an unverified copy may exist there)"
             case .unreadable: what = "the item is there but its value could not be read back (keychain locked, or a prompt would have been needed)"
             case .empty:      what = "the stored value read back empty"
             case .differs:    what = "the stored value read back differs from what was written"
@@ -262,7 +262,11 @@ enum KeychainError: Error, LocalizedError {
                 case .readdFailed(let st): why = "re-add: \(status(st))"
                 case .readdVanished:      why = "the keychain accepted the re-add, yet no item exists afterwards"
                 }
-                done = "The new value is not in the slot, and the PREVIOUS value could NOT be put back (\(why)). The slot is now EMPTY: store the secret again."
+                if case .readdFailed = loss {
+                    done = "The new value is not in the slot, and the PREVIOUS value could NOT be put back (\(why)). The slot's state is unknown — the re-add was refused; check the destination, then store the secret again."
+                } else {
+                    done = "The new value is not in the slot, and the PREVIOUS value could NOT be put back (\(why)). The slot is now EMPTY: store the secret again."
+                }
             case .restoreMismatch(let why):
                 done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but reads back \(why.rawValue) — the slot holds an UNVERIFIED item. Remove it (`che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))`) and store the secret again."
             case .leftInPlace(let replaced):
@@ -296,7 +300,7 @@ enum KeychainError: Error, LocalizedError {
                 case .readdFailed(let rs): why = "re-add failed: OSStatus \(rs)"
                 case .readdVanished:      why = "the keychain accepted the re-add, yet no item exists afterwards"
                 }
-                outcome = "The previous item could NOT be restored (\(why)) — \(svc)/\(acct) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
+                outcome = "The previous item could NOT be restored (\(why)) — \(sanitize(svc))/\(sanitize(acct)) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
             }
             return """
             replacing \(sanitize(svc))/\(sanitize(acct)) failed: the old item was deleted but adding the new one failed \
@@ -453,7 +457,7 @@ enum KeychainStore {
                 // says nothing about the item, and deleting could destroy a good one.
                 let cleanup: MismatchCleanup
                 switch why {
-                case .empty, .differs: cleanup = deleteWritten(rb.item)
+                case .empty, .differs: cleanup = deleteWritten(rb.item, service: service, account: account, daemon: daemon)
                 case .missing:         cleanup = .nothingStored
                 case .unreadable, .ambiguous: cleanup = .leftInPlace(previousReplaced: false)
                 }
@@ -549,11 +553,21 @@ enum KeychainStore {
 
     /// Delete the item the read-back identified (the very reference it read),
     /// with prompts disabled. Never the broad `unset` sweep (#5 policy).
-    private static func deleteWritten(_ item: SecKeychainItem?) -> MismatchCleanup {
+    /// Remove the item the read-back found — but only if it is still ours:
+    /// a third party could have replaced our just-written item before the
+    /// read-back, and `SecKeychainItemDelete(ref)` would delete theirs. The
+    /// same inspection that guards every write guards this delete (`.own`,
+    /// or `.allowAll` for a daemon write, and the very same reference).
+    static func deleteWritten(_ item: SecKeychainItem?, service: String, account: String, daemon: Bool) -> MismatchCleanup {
         #if DEBUG
         if let forced = deleteWrittenOverride { return forced }
         #endif
         guard let item = item else { return .removalFailed(errSecItemNotFound, previousReplaced: false) }
+        guard let found = try? inspect(service: service, account: account),
+              let current = found.item, CFEqual(current, item),
+              (found.existing == .own || (daemon && found.existing == .allowAll)) else {
+            return .removalFailed(errSecInvalidOwnerEdit, previousReplaced: false)
+        }
         return withoutInteraction {
             let st = SecKeychainItemDelete(item)
             return st == errSecSuccess ? .removed : .removalFailed(st, previousReplaced: false)
@@ -603,7 +617,7 @@ enum KeychainStore {
             let cleanup: MismatchCleanup
             switch why {
             case .empty, .differs:
-                let del = deleteWritten(rb.item)
+                let del = deleteWritten(rb.item, service: service, account: account, daemon: daemon)
                 if del == .removed {
                     cleanup = restorePrevious(old, service: service, account: account, keychain: keychain).cleanup
                 } else if case .removalFailed(let st, _) = del {

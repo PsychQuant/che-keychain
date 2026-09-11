@@ -18,7 +18,19 @@ enum PromptResult {
 /// destination string is rendered in the dialog so the user can verify the
 /// caller isn't redirecting writes to a misleading service/account.
 enum PromptDialog {
-    static func run(title: String, destination: String, explain: String?, fields: [PromptField]) -> PromptResult {
+    /// The one sentence that must survive on the dialog's protected first line.
+    /// Both facts are kept when both hold — the worst combination (an existing
+    /// secret destroyed AND made world-readable) must not lose one of them.
+    static func warningText(daemon: Bool, replaces: Bool) -> String? {
+        switch (daemon, replaces) {
+        case (false, false): return nil
+        case (true, false):  return "daemon-readable: any process can read it without a prompt"
+        case (false, true):  return "replaces an existing secret"
+        case (true, true):   return "replaces an existing secret AND makes it daemon-readable: any process can read it without a prompt"
+        }
+    }
+
+    static func run(title: String, destination: String, explain: String?, fields: [PromptField], warning: String? = nil) -> PromptResult {
         // NSApp must be a regular app for its window to come forward on a
         // CLI invocation. Without this, an .runModal() either no-ops or hides
         // behind whatever terminal/app is in front.
@@ -35,7 +47,7 @@ enum PromptDialog {
 
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = buildInformativeText(destination: destination, explain: explain)
+        alert.informativeText = buildInformativeText(destination: destination, explain: explain, warning: warning)
         alert.addButton(withTitle: "Store")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .informational

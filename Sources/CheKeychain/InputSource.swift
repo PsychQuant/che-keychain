@@ -193,10 +193,23 @@ enum InputSource {
         }
         // Give a slow writer a moment to deliver a second line, so a multi-line
         // value is refused instead of silently truncated (best-effort).
-        // A poll error here must not throw away an already complete, valid line.
-        if breakAt != nil && !sawEOF && ((try? waitReadable(stdinGraceMilliseconds)) ?? false) {
-            buffer.append(handle.availableData)
+        // Keep looking for the WHOLE grace period, not just the first readable
+        // event: a lone blank byte followed by a second line inside the window
+        // must still be seen. A poll error here must not discard the valid line.
+        if breakAt != nil {   // (EOF cannot have been seen: the loop broke on a line break)
+            let graceEnd = DispatchTime.now() + .milliseconds(Int(stdinGraceMilliseconds))
+            while true {
+                let left = Int64(graceEnd.uptimeNanoseconds) - Int64(DispatchTime.now().uptimeNanoseconds)
+                if left <= 0 { break }
+                guard (try? waitReadable(Int32(min(Int64(stdinGraceMilliseconds), left / 1_000_000 + 1)))) ?? false else { break }
+                let more = handle.availableData
+                if more.isEmpty { break }                                    // EOF
+                buffer.append(more)
+                if more.contains(where: { !isBlank($0) }) { break }          // enough to refuse
+            }
         }
+        // Best-effort: the buffer held the secret; wipe it once the String copy exists.
+        defer { buffer.resetBytes(in: 0..<buffer.count) }
         guard contentSeen else { throw InputSourceError.emptyStdin }
         let lineEnd = breakAt ?? buffer.count
         let line = buffer[lineStart..<lineEnd]

@@ -78,6 +78,7 @@ Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other erro
 | Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only. With `--daemon` it refuses — at write time, inside `save()` — to replace an existing prompt-on-read item; a new allow-all item can still be created |
 | Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
+| Copies of the value in this process | the dialog's field, the stdin buffer (wiped best-effort), the clipboard string and the read-back copy are ordinary process memory and are not zeroed reliably; the pasteboard is emptied only after a verified store and only if unchanged |
 
 Key properties:
 

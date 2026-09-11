@@ -16,6 +16,15 @@ final class PromptDialogTests: XCTestCase {
         XCTAssertFalse(PromptDialog.buildInformativeText(destination: "d", explain: nil).contains("⚠"))
     }
 
+    func testWarningTextCombinesReplaceAndDaemonInsteadOfChoosing() {
+        // Both facts must survive on the protected first line — the worst combination
+        // (an existing secret destroyed AND made world-readable) must not lose one of them.
+        XCTAssertNil(PromptDialog.warningText(daemon: false, replaces: false))
+        XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: false), "daemon-readable: any process can read it without a prompt")
+        XCTAssertEqual(PromptDialog.warningText(daemon: false, replaces: true), "replaces an existing secret")
+        XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: true), "replaces an existing secret AND makes it daemon-readable: any process can read it without a prompt")
+    }
+
     func testInformativeTextIncludesDestination() {
         let text = PromptDialog.buildInformativeText(destination: "service=foo account=bar", explain: nil)
         XCTAssertTrue(text.contains("service=foo account=bar"))

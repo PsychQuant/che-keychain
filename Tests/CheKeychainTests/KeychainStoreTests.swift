@@ -279,6 +279,36 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(KeychainStore.has(service: service, account: "theirs2"))
     }
 
+    func testDeleteWrittenRefusesAnItemThatIsNoLongerOurs() throws {
+        // A racing third party could replace our just-written item before the
+        // read-back; the cleanup must re-check ownership, never delete by reference alone.
+        try seedForeignItem(account: "swapped", value: "theirs")
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecAttrAccount as String: "swapped", kSecReturnRef as String: true]
+        var out: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(q as CFDictionary, &out), errSecSuccess)
+        let ref = out as! SecKeychainItem
+        let outcome = KeychainStore.deleteWritten(ref, service: service, account: "swapped", daemon: false)
+        guard case .removalFailed(errSecInvalidOwnerEdit, previousReplaced: false) = outcome else { return XCTFail("got \(outcome)") }
+        XCTAssertTrue(KeychainStore.has(service: service, account: "swapped"), "the foreign item is untouched")
+        // Our own item is still removable through the same path.
+        try KeychainStore.save(service: service, account: "ours", value: "v")
+        let q2: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                 kSecAttrAccount as String: "ours", kSecReturnRef as String: true]
+        var out2: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(q2 as CFDictionary, &out2), errSecSuccess)
+        XCTAssertEqual(KeychainStore.deleteWritten(out2 as! SecKeychainItem, service: service, account: "ours", daemon: false), .removed)
+        XCTAssertFalse(KeychainStore.has(service: service, account: "ours"))
+    }
+
+    func testRemovedPreviousLostDoesNotClaimAnEmptySlotWhenTheReaddWasRefused() {
+        let msg = KeychainError.storedValueMismatch(service: "s", account: "a", reason: .differs, cleanup: .removedPreviousLost(.readdFailed(-25299))).errorDescription ?? ""
+        XCTAssertFalse(msg.contains("now EMPTY"), msg)
+        XCTAssertTrue(msg.contains("state is unknown") && msg.contains("-25299"), msg)
+        let missing = KeychainError.storedValueMismatch(service: "s", account: "a", reason: .missing, cleanup: .nothingStored).errorDescription ?? ""
+        XCTAssertTrue(missing.contains("outside the search list"), missing)
+    }
+
     // MARK: - Read-back verification (#6)
 
     func testSaveRejectsEmptyValue() throws {

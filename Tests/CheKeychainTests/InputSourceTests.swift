@@ -44,6 +44,19 @@ final class InputSourceTests: XCTestCase {
         p.fileHandleForWriting.closeFile()
     }
 
+    func testStdinGraceKeepsLookingAfterABlankByte() throws {
+        // Three writes inside the grace window: line, a lone blank byte, a second line.
+        // One poll + one read would see only the blank and store "first" — truncation.
+        let p = Pipe()
+        p.fileHandleForWriting.write(Data("first\n".utf8))
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.01) { p.fileHandleForWriting.write(Data(" ".utf8)) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.04) { p.fileHandleForWriting.write(Data("second\n".utf8)) }
+        XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
+            guard case InputSourceError.stdinMultiline = err else { return XCTFail("got \(err)") }
+        }
+        p.fileHandleForWriting.closeFile()
+    }
+
     func testStdinAllBlankStreamIsBoundedByTheLimit() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-keychain-blank-\(UUID().uuidString)")
         try Data(repeating: 0x20, count: InputSource.stdinLimit + 100).write(to: url)

@@ -17,9 +17,16 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
 /// outcome (1 = the new value is not in the slot; 3 = in the slot, unverified;
 /// 4 = a bad item is stuck — see MismatchCleanup.exitCode). `note` is appended
 /// to any failure (set-pair says what was already written).
-func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, note: String = "") {
+/// Exit 3 ("stored, unverified") is NOT fatal here: the value IS in the slot,
+/// so the caller may go on (set-pair stores its second half) and report 3 at
+/// the end. Returns that error; dies for everything else.
+@discardableResult
+func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, note: String = "") -> KeychainError? {
     do {
         try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting)
+        return nil
+    } catch let e as KeychainError where e.exitCode == 3 {
+        return e
     } catch {
         dieWith(error, note: note)
     }
@@ -73,16 +80,25 @@ case .set(let a):
     // still never enters argv or stdout.
     let value: String
     var clipboardChangeCountAtRead: Int? = nil
-    var existsAtDialog: Bool? = nil   // clipboard: what the dialog claimed; checked again at write time
+    var existsAtDialog: Bool? = nil   // dialog / clipboard: what the dialog claimed; checked again at write time
     switch a.source {
     case .dialog:
         let title = a.label ?? "Enter credential"
         let field = PromptField(name: a.account, label: a.label ?? a.account, isSecure: a.secure)
+        // Consent must be for what actually happens: say on the protected first
+        // line whether Store replaces an existing secret and/or makes it
+        // daemon-readable. The probe fails closed (preflight just passed).
+        let existing: KeychainStore.Existing
+        do { existing = try KeychainStore.inspectExisting(service: a.service, account: a.account) } catch { dieWith(error) }
+        let replaces: Bool
+        if case .none = existing { replaces = false } else { replaces = true }
+        existsAtDialog = replaces
         let result = PromptDialog.run(
             title: title,
-            destination: "service=\(a.service) account=\(a.account)",
+            destination: "service=\(sanitize(a.service)) account=\(sanitize(a.account))",
             explain: a.explain,
-            fields: [field]
+            fields: [field],
+            warning: PromptDialog.warningText(daemon: a.daemon, replaces: replaces)
         )
         switch result {
         case .cancel:
@@ -107,7 +123,7 @@ case .set(let a):
         } catch {
             // Before any consent, one undifferentiated reason: the caller sees
             // stderr and the exit code, and must not learn the clipboard's shape.
-            die("the clipboard does not hold exactly one clean line of text (it is empty, padded with whitespace, multi-line, or contains control characters) — copy exactly the value and retry.")
+            die("the clipboard does not hold exactly one clean line of text (it is empty, padded with whitespace, multi-line, or contains control characters) — copy exactly the value and retry. The clipboard was left as is.")
         }
         // Identifiers are validated by the parser, but cap them here too so a
         // long name cannot push the warning and the fingerprint out of view.
@@ -122,19 +138,24 @@ case .set(let a):
         case .none:
             overwrite = "New item: nothing is stored at this destination yet."
             existsAtDialog = false
-        default:
+        case .own:
             overwrite = "An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
                 + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
             existsAtDialog = true
+        default:
+            // Unreachable after a passed preflight unless the slot changed meanwhile;
+            // say what save() will do (refuse), not what it would do for an own item.
+            overwrite = "An item exists at this destination that che-keychain will NOT replace (its ACL is not this binary's alone); Store will be refused."
+            existsAtDialog = true
         }
-        let warning = a.daemon ? "daemon-readable: any process can read it without a prompt" : (existsAtDialog == true ? "replaces an existing secret" : nil)
+        let warning = PromptDialog.warningText(daemon: a.daemon, replaces: existsAtDialog == true)
         let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
         guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain, warning: warning) else {
-            emit("Cancelled.", to: true)
+            emit("Cancelled. The clipboard was left as is.", to: true)
             exit(2)
         }
         guard InputSource.clipboardChangeCount() == before else {
-            die("the clipboard changed while the dialog was open — nothing stored. Copy the value again and retry.")
+            die("the clipboard changed while the dialog was open — nothing stored. Copy the value again and retry. The clipboard was left as is.")
         }
         value = read
         clipboardChangeCountAtRead = before
@@ -153,9 +174,11 @@ case .set(let a):
     }
     // On failure the clipboard is left alone so the user can retry — and the
     // message says so, since the success line is where the clearing is reported.
-    storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon,
-               mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog,
-               note: a.source == .clipboard ? "\n  The clipboard was left as is." : "")
+    if let unverified = storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon,
+                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog,
+                                   note: a.source == .clipboard ? "\n  The clipboard was left as is." : "") {
+        dieWith(unverified, note: a.source == .clipboard ? "\n  The clipboard was left as is." : "")
+    }
     // Only after the value is stored AND read back does the token leave the
     // clipboard — and only if the clipboard still holds what we read.
     var origin = a.source == .stdin ? " (from stdin)" : ""
@@ -184,11 +207,14 @@ case .setPair(let a):
         PromptField(name: a.visibleAccount, label: visibleLabel, isSecure: false),
         PromptField(name: a.secureAccount,  label: secureLabel,  isSecure: true)
     ]
+    let pairReplaces = (try? KeychainStore.inspectExisting(service: a.service, account: a.visibleAccount)).map { if case .none = $0 { return false } else { return true } } ?? true
+        || (try? KeychainStore.inspectExisting(service: a.service, account: a.secureAccount)).map { if case .none = $0 { return false } else { return true } } ?? true
     let result = PromptDialog.run(
         title: title,
-        destination: "service=\(a.service)  accounts={\(a.visibleAccount), \(a.secureAccount)}",
+        destination: "service=\(sanitize(a.service))  accounts={\(sanitize(a.visibleAccount)), \(sanitize(a.secureAccount))}",
         explain: a.explain,
-        fields: fields
+        fields: fields,
+        warning: PromptDialog.warningText(daemon: false, replaces: pairReplaces)
     )
     switch result {
     case .cancel:
@@ -201,10 +227,16 @@ case .setPair(let a):
         guard let s = InputSource.typedValue(values[a.secureAccount] ?? "") else {
             die("\(a.secureAccount) is empty — nothing stored.", exitCode: 1)
         }
-        storeOrDie(service: a.service, account: a.visibleAccount, value: v,
-                   note: "\n  Note: \(a.service)/\(a.secureAccount) was NOT stored (set-pair stops at the first failure); the pair is incomplete until you re-run set-pair.")
-        storeOrDie(service: a.service, account: a.secureAccount, value: s,
-                   note: "\n  Note: \(a.service)/\(a.visibleAccount) WAS stored before this failure; the pair is now inconsistent until you re-run set-pair.")
+        // A "stored, unverified" first half (exit 3) is in the slot, so the second
+        // half is still stored; both outcomes are reported at the end with exit 3.
+        let first = storeOrDie(service: a.service, account: a.visibleAccount, value: v,
+                               note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.secureAccount)) was NOT stored (set-pair stops at a failure that leaves nothing usable); the pair is incomplete until you re-run set-pair.")
+        let second = storeOrDie(service: a.service, account: a.secureAccount, value: s,
+                                note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.visibleAccount)) \(first == nil ? "WAS stored and verified" : "was stored but could not be verified") before this failure; the pair is inconsistent until you re-run set-pair.")
+        if first != nil || second != nil {
+            let parts = [first, second].compactMap { $0?.errorDescription }
+            die(parts.joined(separator: "\n") + "\n  Both halves of the pair are in place; the one(s) above could not be verified.", exitCode: 3)
+        }
         emit("✓ stored \(a.service)/{\(a.visibleAccount), \(a.secureAccount)}")
     }
 

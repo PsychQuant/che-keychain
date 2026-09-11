@@ -83,9 +83,11 @@ enum AppVersion {
            `che-keychain unset` command the report gives, then store again
 
       `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
-      `--stdin` does not. The dialog shows the destination
-      (service + account) so the user can verify a malicious caller isn't
-      redirecting writes. Secure fields use NSSecureTextField (masked).
+      `--stdin` does not. The dialog's first line warns when Store replaces
+      an existing secret and/or makes it daemon-readable; then it shows the
+      destination (service + account) so the user can verify a malicious
+      caller isn't redirecting writes. Secure fields use NSSecureTextField
+      (masked).
       Storage: login.keychain-db (local, NOT iCloud-synced).
 
       `--daemon` stores the item with an "allow all applications" ACL so a
