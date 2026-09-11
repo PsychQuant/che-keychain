@@ -43,8 +43,11 @@ enum AppVersion {
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
       reads the clipboard's text, then shows a confirmation dialog with the
-      destination and a fingerprint of the value (no input field — the paste
-      problem lived there; Return does nothing, Esc cancels, Store needs a click
+      destination and a fingerprint of the value — its byte length and 8 hex
+      digits of its SHA-256: enough to notice a wrong clipboard; useless
+      against a long random token, but for a low-entropy secret (PIN, short
+      passphrase) an observer of the screen could confirm a guess offline (no
+      input field — the paste problem lived there; Return does nothing, Esc cancels, Store needs a click
       or ⌘S; it says whether an item already exists at the destination); nothing is
       stored if the clipboard changed while the dialog was open. Once the value
       is stored and verified the clipboard is emptied (every type on it) if it
@@ -89,8 +92,11 @@ enum AppVersion {
       confirmation, or — with --stdin — the caller itself); only the storage ACL
       is relaxed. Use ONLY for low-sensitivity creds.
 
-      Exit codes: 0 stored and verified · 1 error, nothing of yours left in the
-      slot · 2 cancelled · 3 stored but unverified · 4 bad item stuck (above).
+      Exit codes (set, set-pair): 0 stored and verified · 1 the new value did
+      not land — the slot is unchanged, holds the restored previous value, or
+      is empty; the message says which · 2 cancelled · 3 stored but unverified
+      · 4 bad item stuck (above). `has`: 0 present, 1 absent. `unset`: 0, or 1
+      when some match could not be removed.
 
       `has`  exits 0 if the entry exists, 1 if it does not.
       `unset` removes an account (or all accounts under a service if --account

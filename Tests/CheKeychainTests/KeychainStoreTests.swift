@@ -443,15 +443,43 @@ final class KeychainStoreTests: XCTestCase {
     }
 
     func testReplaceFailedMessageSaysWhatHappenedToTheOldValue() {
-        func msg(_ r: MismatchCleanup) -> String { KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: r).errorDescription ?? "" }
-        let ok = msg(.restoredPrevious)
+        func msg(_ r: RestoreOutcome) -> String { KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: r).errorDescription ?? "" }
+        let ok = msg(.restored)
         XCTAssertTrue(ok.contains("re-stored as a prompt-on-read item") && ok.contains("and read back") && ok.contains("-25308"), ok)
         let unverified = msg(.restoredUnverified)
         XCTAssertTrue(unverified.contains("could not be read back to prove it") && !unverified.contains("now absent"), unverified)
-        let lost = msg(.removedPreviousLost(.readdFailed(-25293)))
+        let lost = msg(.lost(.readdFailed(-25293)))
         XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("now absent") && lost.contains("-25293"), lost)
-        let wrong = msg(.restoreMismatch(.differs))
+        let wrong = msg(.mismatch(.differs))
         XCTAssertTrue(wrong.contains("reads back differs") && wrong.contains("unset"), wrong)
+    }
+
+    func testEveryKeychainErrorCarriesItsExitCode() {
+        // One accessor for the CLI, so a future error case cannot silently miss the mapping.
+        XCTAssertEqual(KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .mismatch(.differs)).exitCode, 4)
+        XCTAssertEqual(KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .restored).exitCode, 1)
+        XCTAssertEqual(KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .restoredUnverified).exitCode, 1)
+        XCTAssertEqual(KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .lost(.readdVanished)).exitCode, 1)
+        XCTAssertEqual(KeychainError.storedValueMismatch(service: "s", account: "a", reason: .unreadable, cleanup: .leftInPlace(previousReplaced: false)).exitCode, 3)
+        XCTAssertEqual(KeychainError.storedValueMismatch(service: "s", account: "a", reason: .differs, cleanup: .removalFailed(-25244, previousReplaced: false)).exitCode, 4)
+        XCTAssertEqual(KeychainError.aclWideningRefused(service: "s", account: "a").exitCode, 1)
+        XCTAssertEqual(KeychainError.notFound.exitCode, 1)
+    }
+
+    func testSaveRefusesWhenTheDestinationChangedSinceTheDialog() throws {
+        // The clipboard dialog says "New item" / "ALREADY EXISTS" from a pre-write
+        // probe; the write must refuse if reality differs at write time.
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "v", expectingExisting: true)) { err in
+            guard case KeychainError.destinationChanged(_, _, true) = err else { return XCTFail("got \(err)") }
+        }
+        XCTAssertFalse(KeychainStore.has(service: service, account: "d"))
+        try KeychainStore.save(service: service, account: "d", value: "v", expectingExisting: false)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "v2", expectingExisting: false)) { err in
+            guard case KeychainError.destinationChanged(_, _, false) = err else { return XCTFail("got \(err)") }
+        }
+        XCTAssertEqual(try readOwn(account: "d"), "v", "untouched")
+        try KeychainStore.save(service: service, account: "d", value: "v3", expectingExisting: true)
+        XCTAssertEqual(try readOwn(account: "d"), "v3")
     }
 
     func testCleanupOutcomesMapToExitCodesByWhetherTheNewValueLanded() {
@@ -463,6 +491,11 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(MismatchCleanup.leftInPlace(previousReplaced: true).exitCode, 3)
         XCTAssertEqual(MismatchCleanup.removalFailed(-25244, previousReplaced: false).exitCode, 4)
         XCTAssertEqual(MismatchCleanup.restoreMismatch(.empty).exitCode, 4)
+    }
+
+    func testRotationRestoredMessageSaysAttributesWereNotPreserved() {
+        let msg = KeychainError.storedValueMismatch(service: "s", account: "a", reason: .differs, cleanup: .restoredPrevious).errorDescription ?? ""
+        XCTAssertTrue(msg.contains("re-stored and read back") && msg.contains("label, dates") , msg)
     }
 
     func testRemovedPreviousLostNamesTheActualLoss() {

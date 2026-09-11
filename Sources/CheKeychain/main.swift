@@ -17,14 +17,11 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
 /// outcome (1 = the new value is not in the slot; 3 = in the slot, unverified;
 /// 4 = a bad item is stuck — see MismatchCleanup.exitCode). `note` is appended
 /// to any failure (set-pair says what was already written).
-func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, note: String = "") {
+func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, note: String = "") {
     do {
-        try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL)
+        try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting)
     } catch let e as KeychainError {
-        if case .storedValueMismatch(_, _, _, let cleanup) = e {
-            die((e.errorDescription ?? "\(e)") + note, exitCode: cleanup.exitCode)
-        }
-        die((e.errorDescription ?? "\(e)") + note)
+        die((e.errorDescription ?? "\(e)") + note, exitCode: e.exitCode)
     } catch {
         die(((error as? LocalizedError)?.errorDescription ?? error.localizedDescription) + note)
     }
@@ -72,6 +69,7 @@ case .set(let a):
     // still never enters argv or stdout.
     let value: String
     var clipboardChangeCountAtRead: Int? = nil
+    var existsAtDialog: Bool? = nil   // clipboard: what the dialog claimed; checked again at write time
     switch a.source {
     case .dialog:
         let title = a.label ?? "Enter credential"
@@ -113,8 +111,13 @@ case .set(let a):
         let overwrite: String
         if let existing = try? KeychainStore.inspectExisting(service: a.service, account: a.account) {
             switch existing {
-            case .none: overwrite = "New item: nothing is stored at this destination yet."
-            default:    overwrite = "⚠ An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
+            case .none:
+                overwrite = "New item: nothing is stored at this destination yet."
+                existsAtDialog = false
+            default:
+                overwrite = "⚠ An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
+                    + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
+                existsAtDialog = true
             }
         } else {
             overwrite = "⚠ Could not determine whether an item already exists here; Store would replace one that does."
@@ -142,8 +145,11 @@ case .set(let a):
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
-    // On failure the clipboard is left alone so the user can retry.
-    storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon, mayWidenExistingACL: a.source != .stdin)
+    // On failure the clipboard is left alone so the user can retry — and the
+    // message says so, since the success line is where the clearing is reported.
+    storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon,
+               mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog,
+               note: a.source == .clipboard ? "\n  The clipboard was left as is." : "")
     // Only after the value is stored AND read back does the token leave the
     // clipboard — and only if the clipboard still holds what we read.
     var origin = a.source == .stdin ? " (from stdin)" : ""
@@ -189,7 +195,8 @@ case .setPair(let a):
         guard let s = InputSource.typedValue(values[a.secureAccount] ?? "") else {
             die("\(a.secureAccount) is empty — nothing stored.", exitCode: 1)
         }
-        storeOrDie(service: a.service, account: a.visibleAccount, value: v)
+        storeOrDie(service: a.service, account: a.visibleAccount, value: v,
+                   note: "\n  Note: \(a.service)/\(a.secureAccount) was NOT stored (set-pair stops at the first failure); the pair is incomplete until you re-run set-pair.")
         storeOrDie(service: a.service, account: a.secureAccount, value: s,
                    note: "\n  Note: \(a.service)/\(a.visibleAccount) WAS stored before this failure; the pair is now inconsistent until you re-run set-pair.")
         emit("✓ stored \(a.service)/{\(a.visibleAccount), \(a.secureAccount)}")

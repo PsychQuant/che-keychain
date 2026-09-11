@@ -157,7 +157,8 @@ enum InputSource {
             let remaining = Int64(deadline.uptimeNanoseconds) - Int64(DispatchTime.now().uptimeNanoseconds)
             let budget = Int32(max(0, min(Int64(ms), remaining / 1_000_000)))
             var pfd = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
-            let n = poll(&pfd, 1, budget)
+            var n: Int32
+            repeat { n = poll(&pfd, 1, budget) } while n < 0 && errno == EINTR
             if n < 0 { throw InputSourceError.stdinReadFailed(errno: errno) }
             if n == 0 { return false }
             if (pfd.revents & Int16(POLLERR | POLLNVAL)) != 0 { throw InputSourceError.stdinReadFailed(errno: EIO) }
@@ -174,7 +175,6 @@ enum InputSource {
             let chunk = handle.availableData
             if chunk.isEmpty { sawEOF = true; break }                // EOF
             buffer.append(chunk)
-            if buffer.count > stdinLimit { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
             var i = scanned
             while i < buffer.count {
                 let b = buffer[i]
@@ -187,12 +187,14 @@ enum InputSource {
                 i += 1
             }
             scanned = buffer.count
+            // The cap is about a line that never completes; a completed line
+            // followed by more content is the multi-line refusal below.
+            if breakAt == nil && buffer.count > stdinLimit { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
         }
         // Give a slow writer a moment to deliver a second line, so a multi-line
         // value is refused instead of silently truncated (best-effort).
         if try breakAt != nil && !sawEOF && waitReadable(stdinGraceMilliseconds) {
             buffer.append(handle.availableData)
-            if buffer.count > stdinLimit { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
         }
         guard contentSeen else { throw InputSourceError.emptyStdin }
         let lineEnd = breakAt ?? buffer.count

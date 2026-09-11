@@ -141,6 +141,17 @@ final class InputSourceTests: XCTestCase {
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "tok\n")), "tok")
     }
 
+    func testStdinCompleteLineFollowedByOversizeTailIsMultilineNotTooLong() throws {
+        // The cap is about a line that never completes; a complete first line followed
+        // by more content is the multi-line refusal, whatever the tail's size.
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-keychain-tail-\(UUID().uuidString)")
+        try Data(("tok\n" + String(repeating: "y", count: InputSource.stdinLimit + 10)).utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertThrowsError(try InputSource.readStdin(handle: try FileHandle(forReadingFrom: url), isTTY: false)) { err in
+            guard case InputSourceError.stdinMultiline = err else { return XCTFail("got \(err)") }
+        }
+    }
+
     func testStdinRefusesOverlongLine() throws {
         // A Pipe would block the writer at 64 KiB; use a file as the stdin stand-in.
         let big = String(repeating: "x", count: InputSource.stdinLimit + 10)
