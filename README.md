@@ -40,21 +40,22 @@ che-keychain set-pair --service che-transport-tdx \
   --title "TDX setup" \
   --explain "Free TDX account: https://tdx.transportdata.tw/register"
 
-# Check existence without revealing the value
-che-keychain has --service my-api --account token   # exit 0 if present
-
-# Remove
-# Paste-free: copy the token, confirm the destination in a dialog; the value is
-# removed from this Mac's clipboard once the store is verified
+# Paste-free: copy the token; a confirmation dialog shows the destination and a
+# fingerprint of the value (Return cancels); the clipboard is emptied once the
+# store is verified
 che-keychain set --service my-api --account token --from-clipboard
 
-# Automation: exactly one line from a pipe (a terminal is refused); the destination
-# is printed on stderr; nothing is hidden from the caller here — it holds the value
+# Automation: exactly one line from a pipe (a terminal is refused); no dialog —
+# the caller holds the value, so use this only from automation you trust
 printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --stdin
 
 # Every store is read back and compared; an empty or whitespace-only value is
 # refused; a garbled store is removed again (a rotation gets its previous value back).
 
+# Check existence without revealing the value
+che-keychain has --service my-api --account token   # exit 0 if present
+
+# Remove
 che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
@@ -67,13 +68,15 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 |------|----------------------|
 | Caller invokes `che-keychain set --service X --account Y --secure` | exit code, stderr message |
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
+| Caller invokes `… --from-clipboard` | exit code, stderr; the pasteboard itself is readable by the caller and every process. A confirmation dialog (destination + value fingerprint, Return cancels) gates the store; the clipboard is emptied afterwards if unchanged |
+| Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only |
 | Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
 
 Key properties:
 
-- **Caller never sees the value** (dialog and `--from-clipboard`) — the value is read in this binary's process from an AppKit text field or from the pasteboard; it is not passed through args / env from the caller. `--stdin` is the documented exception: the caller pipes the value in, so it already holds it — use it only from automation you trust.
-- **Dialog shows the destination** — `service` and `account` are rendered in the alert's informative text (the input dialog, and the confirmation dialog `--from-clipboard` shows) so the user can verify a malicious caller isn't redirecting writes to a misleading key. `--stdin` prints the destination on stderr instead; a caller that swallows stderr can hide it, which is why `--stdin` is for trusted automation only.
+- **Caller never sees the value** (dialog only) — the value is read in this binary's process from an AppKit text field; it is not passed through args / env / stdin from the caller. The two other sources do not have this property: with `--from-clipboard` the value sits on the system pasteboard, which the caller (and any process) can read; with `--stdin` the caller pipes it in. Use them where that is acceptable.
+- **Dialog shows the destination** — `service` and `account` are rendered in the alert's informative text (the input dialog, and the confirmation dialog `--from-clipboard` shows, which also shows a fingerprint of the value and cancels on Return) so the user can verify a malicious caller isn't redirecting writes to a misleading key. `--stdin` has no dialog: it prints the destination on stderr, which a caller can swallow — so `--stdin` is for trusted automation only, and a caller using it can overwrite an item this binary created without a human in the loop.
 - **Storage is local** — items go to `login.keychain-db`, not iCloud Keychain. They don't appear in Safari's Passwords app; only in Keychain Access.app.
 - **Identifiers are sanity-checked** — empty / control-character service / account names are rejected.
 

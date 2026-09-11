@@ -7,8 +7,11 @@ enum AppVersion {
     static let helpMessage = """
     \(versionString)
       A trust-isolated credential prompt for macOS keychain — the dialog runs in
-      this signed binary, NOT in whatever caller invoked it. The caller (LLM,
-      script, MCP) never sees the user's input; it only learns success / failure.
+      this signed binary, NOT in whatever caller invoked it. With the dialog the
+      caller (LLM, script, MCP) never sees the user's input; it only learns
+      success / failure. --from-clipboard reads the pasteboard (which any process
+      can read) behind a confirmation dialog; --stdin takes the value from the
+      caller itself. See "Value sources" below.
 
     USAGE
       che-keychain set       --service S --account A [--label L] [--explain E] [--secure] [--daemon]
@@ -39,32 +42,38 @@ enum AppVersion {
       reports every item it could not remove.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
-      shows a confirmation dialog with the destination (no input field — the
-      paste problem lived there), then takes the clipboard's text and, once the
-      value is stored and verified, removes it from this Mac's clipboard if it
-      has not changed meanwhile (a clipboard manager or Universal Clipboard may
-      keep a copy; on failure it is left as is); `--stdin` reads exactly one line
-      from a pipe and stops at the line break without waiting for EOF (a
-      terminal, more than one line of content, invalid UTF-8, or >64 KiB without
-      a line break are refused, never truncated) and prints the destination on
-      stderr instead of a dialog — the caller already holds the value.
-      --secure/--label/--explain are refused with both. All sources drop
-      surrounding whitespace and line breaks; a whitespace-only value is
-      refused everywhere, set-pair included. Every store is read back and
-      compared: an empty or different value is removed again (a rotation gets
-      its previous value re-stored and read back, or the report says the slot
-      is now empty); an unreadable or ambiguous read leaves the item and says
+      reads the clipboard's text, then shows a confirmation dialog with the
+      destination and a fingerprint of the value (no input field — the paste
+      problem lived there; Return cancels, Store needs a click or ⌘S); nothing is
+      stored if the clipboard changed while the dialog was open. Once the value
+      is stored and verified the clipboard is emptied (every type on it) if it
+      still holds what was read — a clipboard manager or Universal Clipboard may
+      keep a copy; on failure it is left as is. `--stdin` reads exactly one line
+      from a pipe and stops at the line break without waiting for EOF; it shows
+      NO dialog (the caller already holds the value — use it only from
+      automation you trust) and prints the destination on stderr. Refused, never
+      guessed: a terminal, invalid UTF-8, more than 64 KiB, a second line of
+      content that arrived within 100 ms of the first, and — for both sources —
+      a line with leading or trailing whitespace (only line breaks at the ends
+      are removed). --secure/--label/--explain are refused with both. Dialog
+      values are stored as typed; an empty or whitespace-only value is refused
+      everywhere, set-pair included. Every store is read back and compared: an
+      empty or different value is removed again (a rotation gets its previous
+      value re-stored and read back, or the report says exactly what state the
+      slot is in); an unreadable or ambiguous read leaves the item and says
       whether it replaced a previous value.
 
-      `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
+      `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
+      `--stdin` does not. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't
       redirecting writes. Secure fields use NSSecureTextField (masked).
       Storage: login.keychain-db (local, NOT iCloud-synced).
 
       `--daemon` stores the item with an "allow all applications" ACL so a
       headless launchd agent can read it without a keychain-access prompt. The
-      value is still typed into THIS signed dialog (caller never sees it) — only
-      the storage ACL is relaxed. Use ONLY for low-sensitivity creds.
+      value comes from the chosen source (the dialog, the clipboard behind a
+      confirmation, or — with --stdin — the caller itself); only the storage ACL
+      is relaxed. Use ONLY for low-sensitivity creds.
 
       `has`  exits 0 if the entry exists, 1 if it does not.
       `unset` removes an account (or all accounts under a service if --account

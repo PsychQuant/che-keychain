@@ -12,8 +12,12 @@ final class InputSourceTests: XCTestCase {
         return p.fileHandleForReading
     }
 
-    func testStdinReadsOneLineAndTrims() throws {
-        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "  tok3n \r\n"), isTTY: false), "tok3n")
+    func testStdinReadsOneLineAndDropsLineBreaks() throws {
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "tok3n\r\n"), isTTY: false), "tok3n")
+        // Leading/trailing whitespace is refused, not trimmed (stored-as-typed policy).
+        XCTAssertThrowsError(try InputSource.readStdin(handle: pipe(with: "  tok3n \n"), isTTY: false)) { err in
+            guard case InputSourceError.surroundingWhitespace = err else { return XCTFail("got \(err)") }
+        }
         // No trailing newline at all is fine too; CR-only line endings count as breaks.
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "bare"), isTTY: false), "bare")
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "cr\r"), isTTY: false), "cr")
@@ -27,6 +31,26 @@ final class InputSourceTests: XCTestCase {
         }
     }
 
+    func testStdinRefusesASecondLineThatArrivesShortlyAfterTheFirst() throws {
+        // The lines arrive in separate writes; the grace period must catch the second.
+        let p = Pipe()
+        p.fileHandleForWriting.write(Data("first\n".utf8))
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.02) { p.fileHandleForWriting.write(Data("second\n".utf8)) }
+        XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
+            guard case InputSourceError.stdinMultiline = err else { return XCTFail("got \(err)") }
+        }
+        p.fileHandleForWriting.closeFile()
+    }
+
+    func testStdinAllBlankStreamIsBoundedByTheLimit() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-keychain-blank-\(UUID().uuidString)")
+        try Data(repeating: 0x20, count: InputSource.stdinLimit + 100).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertThrowsError(try InputSource.readStdin(handle: try FileHandle(forReadingFrom: url), isTTY: false)) { err in
+            guard case InputSourceError.stdinTooLong = err else { return XCTFail("got \(err)") }
+        }
+    }
+
     func testStdinRefusesInvalidUTF8() throws {
         let p = Pipe(); p.fileHandleForWriting.write(Data([0x74, 0x6f, 0x6b, 0xff, 0x0a])); p.fileHandleForWriting.closeFile()
         XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
@@ -34,10 +58,13 @@ final class InputSourceTests: XCTestCase {
         }
     }
 
-    func testNormalizeIsTheOneRuleForEverySource() {
-        XCTAssertEqual(InputSource.normalize("  a b \n"), "a b")
-        XCTAssertNil(InputSource.normalize(" \n\t"))
-        XCTAssertNil(InputSource.normalize(""))
+    func testValuePolicies() throws {
+        XCTAssertEqual(try InputSource.normalizeLine("a b\n", source: "x"), "a b")
+        XCTAssertNil(try InputSource.normalizeLine(" \n\t", source: "x"))
+        XCTAssertThrowsError(try InputSource.normalizeLine(" a", source: "x"))
+        XCTAssertEqual(InputSource.typedValue(" a "), " a ", "dialog values are stored as typed")
+        XCTAssertNil(InputSource.typedValue("   "))
+        XCTAssertTrue(InputSource.fingerprint("abc").hasPrefix("3 bytes, sha256 ba7816bf"))
     }
 
     func testStdinReturnsAtTheLineBreakWithoutWaitingForEOF() throws {
@@ -91,8 +118,13 @@ final class InputSourceTests: XCTestCase {
         let pb = NSPasteboard(name: NSPasteboard.Name("che-keychain-test-\(UUID().uuidString)"))
         defer { pb.releaseGlobally() }
         pb.clearContents()
-        pb.setString("\n  secret-value \n", forType: .string)
+        pb.setString("\nsecret-value\n", forType: .string)
         XCTAssertEqual(try InputSource.readClipboard(pasteboard: pb), "secret-value")
+        pb.clearContents(); pb.setString(" padded ", forType: .string)
+        XCTAssertThrowsError(try InputSource.readClipboard(pasteboard: pb)) { err in
+            guard case InputSourceError.surroundingWhitespace = err else { return XCTFail("got \(err)") }
+        }
+        pb.clearContents(); pb.setString("\nsecret-value\n", forType: .string)
         let cc = InputSource.clipboardChangeCount(pasteboard: pb)
         pb.clearContents(); pb.setString("something the user copied meanwhile", forType: .string)
         XCTAssertFalse(InputSource.clearClipboard(pasteboard: pb, ifUnchangedSince: cc), "a changed clipboard is left alone")

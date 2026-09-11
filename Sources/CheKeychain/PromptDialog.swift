@@ -71,7 +71,12 @@ enum PromptDialog {
         alert.informativeText = buildInformativeText(destination: destination, explain: explain)
         alert.addButton(withTitle: "Store")
         alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
+        alert.alertStyle = .warning
+        // With no input field a stray Return must not store: Cancel takes
+        // Return, Store needs a deliberate click (or Cmd+S).
+        alert.buttons[0].keyEquivalent = "s"
+        alert.buttons[0].keyEquivalentModifierMask = [.command]
+        alert.buttons[1].keyEquivalent = "\r"
         return alert.runModal() == .alertFirstButtonReturn
     }
 

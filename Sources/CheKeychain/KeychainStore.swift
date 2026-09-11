@@ -15,17 +15,21 @@ enum MismatchReason: String {
 enum MismatchCleanup: Equatable {
     /// Fresh store: the just-written item was deleted by reference; the slot is empty as before.
     case removed
-    /// Rotation: the just-written item was deleted and the previous value re-stored and read back.
+    /// Rotation: the new value is not in the slot; the previous value was re-stored and read back.
     case restoredPrevious
-    /// Rotation: the just-written item was deleted, but the previous value could NOT be put back
-    /// (it was not readable before the delete, or re-adding it failed / did not verify). The slot is empty.
+    /// Rotation: the previous value was re-added (add succeeded) but could not be read back
+    /// (locked keychain / ambiguous) — almost certainly intact, not proven.
+    case restoredUnverified
+    /// Rotation: the new value is not in the slot and the previous value could NOT be put back
+    /// (it was not readable before the delete, re-adding it failed, or the re-add read back wrong). The slot is empty.
     case removedPreviousLost(restoreStatus: OSStatus?)
     /// The item was left in place (unreadable / ambiguous: nothing proves it is bad).
     /// `previousReplaced` = this was a rotation, so the previous value is gone and the
     /// unverified new one now occupies the slot.
     case leftInPlace(previousReplaced: Bool)
     /// Deletion was attempted and refused (OSStatus); the unverified item remains.
-    case removalFailed(OSStatus)
+    /// `previousReplaced` = rotation: the previous value is gone too.
+    case removalFailed(OSStatus, previousReplaced: Bool)
     /// Nothing to clean up: the write reported success but no item exists.
     case nothingStored
 }
@@ -171,15 +175,17 @@ enum KeychainError: Error, LocalizedError {
             case .removed:
                 done = "The just-written item was removed again; the slot is empty, as it was before."
             case .restoredPrevious:
-                done = "The just-written item was removed and the previous value was re-stored and read back."
+                done = "The new value is not in the slot; the previous value was re-stored and read back."
+            case .restoredUnverified:
+                done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but could not be read back to prove it — check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))` once the keychain is unlocked."
             case .removedPreviousLost(let st):
-                done = "The just-written item was removed, and the PREVIOUS value could NOT be put back\(st.map { " (re-add: \(status($0)))" } ?? " (it could not be read before the replace)"). The slot is now EMPTY: store the secret again."
+                done = "The new value is not in the slot, and the PREVIOUS value could NOT be put back\(st.map { " (re-add: \(status($0)))" } ?? " (it could not be read before the replace)"). The slot is now EMPTY: store the secret again."
             case .leftInPlace(let replaced):
                 done = replaced
                     ? "The new item was left in place but is UNVERIFIED, and it has REPLACED the previous value (which was re-stored only if it could be read). Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, and store the secret again to be sure."
                     : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, then retry the store."
-            case .removalFailed(let st):
-                done = "Removing the just-written item FAILED (\(status(st))) — an unverified item remains: che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))"
+            case .removalFailed(let st, let replaced):
+                done = "Removing the just-written item FAILED (\(status(st))) — an unverified item remains\(replaced ? ", and it has REPLACED the previous value, which is gone" : ""): che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct)), then store the secret again"
             case .nothingStored:
                 done = "Nothing is stored. Retry; if it persists, the keychain the item was written to may not be in the search list."
             }
@@ -312,7 +318,9 @@ enum KeychainStore {
     static func save(service: String, account: String, value: String, daemon: Bool = false) throws {
         // Empty or whitespace-only is refused for EVERY caller (set's three
         // sources and set-pair): such an item looks stored but cannot
-        // authenticate and blocks the next write — the #6 failure class.
+        // authenticate and blocks the next write — the #6 failure class. The
+        // value itself is stored as given: callers decide about line breaks
+        // (InputSource.normalizeLine) and nothing is trimmed here.
         guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw KeychainError.emptyValue(service: service, account: account)
         }
@@ -353,13 +361,14 @@ enum KeychainStore {
 
     /// Run `body` with keychain user interaction disabled: our own items
     /// decrypt without a prompt, and a prompt would hang a headless caller.
-    /// The previous state is restored only if it could be read; otherwise
-    /// interaction stays disabled (fail closed for a CLI that is about to exit).
+    /// The setting is process-global and `set-pair` performs a second save
+    /// afterwards, so the prior state is always restored — to what was read,
+    /// or to the interactive default when the probe itself failed.
     private static func withoutInteraction<T>(_ body: () -> T) -> T {
-        var wasAllowed: DarwinBoolean = false
-        let probed = SecKeychainGetUserInteractionAllowed(&wasAllowed) == errSecSuccess
+        var wasAllowed: DarwinBoolean = true
+        _ = SecKeychainGetUserInteractionAllowed(&wasAllowed)
         _ = SecKeychainSetUserInteractionAllowed(false)
-        defer { if probed { _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) } }
+        defer { _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) }
         return body()
     }
 
@@ -421,10 +430,10 @@ enum KeychainStore {
         #if DEBUG
         if let forced = deleteWrittenOverride { return forced }
         #endif
-        guard let item = item else { return .removalFailed(errSecItemNotFound) }
+        guard let item = item else { return .removalFailed(errSecItemNotFound, previousReplaced: false) }
         return withoutInteraction {
             let st = SecKeychainItemDelete(item)
-            return st == errSecSuccess ? .removed : .removalFailed(st)
+            return st == errSecSuccess ? .removed : .removalFailed(st, previousReplaced: false)
         }
     }
 
@@ -470,7 +479,13 @@ enum KeychainStore {
             switch why {
             case .empty, .differs:
                 let del = deleteWritten(rb.item)
-                cleanup = del == .removed ? restorePrevious(old, service: service, account: account, keychain: keychain) : del
+                if del == .removed {
+                    cleanup = restorePrevious(old, service: service, account: account, keychain: keychain)
+                } else if case .removalFailed(let st, _) = del {
+                    cleanup = .removalFailed(st, previousReplaced: true)
+                } else {
+                    cleanup = del
+                }
             case .missing:
                 cleanup = restorePrevious(old, service: service, account: account, keychain: keychain)
             case .unreadable, .ambiguous:
@@ -486,8 +501,12 @@ enum KeychainStore {
         guard let o = old, !o.isEmpty else { return .removedPreviousLost(restoreStatus: nil) }
         let st = addRaw(service: service, account: account, data: o, access: nil, keychain: keychain)
         guard st == errSecSuccess else { return .removedPreviousLost(restoreStatus: st) }
-        return readBack(service: service, account: account, expected: o).mismatch == nil
-            ? .restoredPrevious : .removedPreviousLost(restoreStatus: errSecDecode)
+        // Proof of failure vs inability to prove success — same split as the main path.
+        switch readBack(service: service, account: account, expected: o).mismatch {
+        case nil:                           return .restoredPrevious
+        case .unreadable?, .ambiguous?:     return .restoredUnverified
+        case .missing?, .empty?, .differs?: return .removedPreviousLost(restoreStatus: errSecDecode)
+        }
     }
 
     private static func add(service: String, account: String, value: String, daemon: Bool) throws {

@@ -70,31 +70,35 @@ case .set(let a):
             emit("Cancelled.", to: true)
             exit(2)
         case .accept(let values):
-            // One normalization rule for every source (InputSource.normalize):
-            // surrounding whitespace/line breaks dropped, whitespace-only = empty.
-            guard let v = InputSource.normalize(values[a.account] ?? "") else {
+            // Stored as typed (0.2.x behaviour); only an empty / whitespace-only
+            // field is refused.
+            guard let v = InputSource.typedValue(values[a.account] ?? "") else {
                 die("empty input — nothing stored.", exitCode: 1)
             }
             value = v
         }
     case .clipboard:
-        // The destination is still confirmed by the user in a dialog — just
-        // without an input field, which is where the paste problem lived.
-        let destination = "service=\(a.service) account=\(a.account)\(a.daemon ? "  (daemon-readable: any process can read it without a prompt)" : "")"
-        guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination,
-                                   explain: "The value is taken from the clipboard as is (surrounding whitespace removed) and removed from this Mac's clipboard once stored and verified.") else {
-            emit("Cancelled.", to: true)
-            exit(2)
-        }
+        // Read first, then confirm: the dialog shows the destination AND a
+        // fingerprint of what will be stored; the clipboard must not change
+        // between the read and the click, or nothing is stored.
         let before = InputSource.clipboardChangeCount()
+        let read: String
         do {
-            value = try InputSource.readClipboard()
+            read = try InputSource.readClipboard()
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
-        // If the clipboard moved during the read, the bytes we hold may not be
-        // what the user meant; do not clear anything later.
-        clipboardChangeCountAtRead = InputSource.clipboardChangeCount() == before ? before : nil
+        let destination = "service=\(a.service) account=\(a.account)\(a.daemon ? "  (daemon-readable: any process can read it without a prompt)" : "")"
+        let explain = "Value: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return cancels; click Store or press ⌘S to confirm."
+        guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain) else {
+            emit("Cancelled.", to: true)
+            exit(2)
+        }
+        guard InputSource.clipboardChangeCount() == before else {
+            die("the clipboard changed while the dialog was open — nothing stored. Copy the value again and retry.")
+        }
+        value = read
+        clipboardChangeCountAtRead = before
     case .stdin:
         // No dialog: the caller already holds the value, so there is nothing to
         // redirect that it does not already have. Say where it will go.
@@ -115,7 +119,7 @@ case .set(let a):
     // clipboard — and only if the clipboard still holds what we read.
     var origin = a.source == .stdin ? " (from stdin)" : ""
     if a.source == .clipboard {
-        origin = InputSource.clearClipboard(ifUnchangedSince: clipboardChangeCountAtRead ?? -1)
+        origin = InputSource.clearClipboard(ifUnchangedSince: clipboardChangeCountAtRead)
             ? " (from clipboard; removed from this Mac's clipboard)"
             : " (from clipboard; clipboard changed meanwhile, left as is)"
     }
@@ -150,10 +154,10 @@ case .setPair(let a):
         emit("Cancelled.", to: true)
         exit(2)
     case .accept(let values):
-        guard let v = InputSource.normalize(values[a.visibleAccount] ?? "") else {
+        guard let v = InputSource.typedValue(values[a.visibleAccount] ?? "") else {
             die("\(a.visibleAccount) is empty — nothing stored.", exitCode: 1)
         }
-        guard let s = InputSource.normalize(values[a.secureAccount] ?? "") else {
+        guard let s = InputSource.typedValue(values[a.secureAccount] ?? "") else {
             die("\(a.secureAccount) is empty — nothing stored.", exitCode: 1)
         }
         do {

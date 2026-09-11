@@ -337,9 +337,9 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "amb", value: "v")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .ambiguous, .leftInPlace(previousReplaced: false)) = err else { return XCTFail("got \(err)") }
         }
-        resetSeams(); KeychainStore.readBackOverride = { _, _ in Data("x".utf8) }; KeychainStore.deleteWrittenOverride = .removalFailed(-25244)
+        resetSeams(); KeychainStore.readBackOverride = { _, _ in Data("x".utf8) }; KeychainStore.deleteWrittenOverride = .removalFailed(-25244, previousReplaced: false)
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "stuck", value: "v")) { err in
-            guard case KeychainError.storedValueMismatch(_, _, .differs, .removalFailed(-25244)) = err else { return XCTFail("got \(err)") }
+            guard case KeychainError.storedValueMismatch(_, _, .differs, .removalFailed(-25244, previousReplaced: false)) = err else { return XCTFail("got \(err)") }
             let msg = (err as? LocalizedError)?.errorDescription ?? ""
             XCTAssertTrue(msg.contains("che-keychain unset --service '\(service)' --account 'stuck'"), msg)
         }
@@ -360,6 +360,33 @@ final class KeychainStoreTests: XCTestCase {
         resetSeams()
         XCTAssertEqual(try readOwn(account: "own"), "v1", "the previous secret survives a failed rotation")
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own)
+    }
+
+    func testRotationRestoreThatCannotBeReadBackIsReportedAsUnverifiedNotLost() throws {
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        // First read-back (new value) differs; the restore's read-back cannot be read.
+        var calls = 0
+        KeychainStore.readBackOverride = { _, _ in calls += 1; return calls == 1 ? Data("garbage".utf8) : nil }
+        // nil from the override means .missing; use the reason override for the second call instead.
+        KeychainStore.readBackOverride = { _, _ in calls += 1; return Data("garbage".utf8) }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .differs, let cleanup) = err else { return XCTFail("got \(err)") }
+            // Second read-back also "differs" (override returns garbage for the restore too) → lost.
+            XCTAssertEqual(cleanup, .removedPreviousLost(restoreStatus: errSecDecode))
+        }
+    }
+
+    func testRotationRemovalFailureSaysThePreviousValueIsGone() throws {
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        KeychainStore.readBackOverride = { _, _ in Data("garbage".utf8) }
+        KeychainStore.deleteWrittenOverride = .removalFailed(-25244, previousReplaced: false)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .differs, .removalFailed(-25244, previousReplaced: true)) = err else { return XCTFail("got \(err)") }
+            let msg = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(msg.contains("REPLACED the previous value"), msg)
+        }
     }
 
     func testRotationUnreadableReadBackSaysThePreviousValueWasReplaced() throws {

@@ -99,7 +99,9 @@ enum CommandParser {
             // Fail closed: a caller asking for the dialog's protections must not
             // silently get the dialog-less path.
             throw CommandError.invalidValue(field: fromClipboard ? "--from-clipboard" : "--stdin",
-                                            reason: "--secure, --label and --explain only apply to the dialog; drop them for this source")
+                                            reason: fromClipboard
+                                                ? "--secure has no input field here, and the confirmation dialog's text is fixed so a caller cannot dress it up (--label/--explain); drop them"
+                                                : "--secure, --label and --explain only apply to the dialog; drop them for --stdin")
         }
         return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon, source: source)
     }
