@@ -69,30 +69,38 @@ case .set(let a):
             emit("Cancelled.", to: true)
             exit(2)
         case .accept(let values):
-            guard let v = values[a.account], !v.isEmpty else {
+            // Same trim as the other sources, so the same secret stores the same
+            // bytes however it was entered; whitespace-only counts as empty.
+            guard let v = values[a.account]?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty else {
                 die("empty input — nothing stored.", exitCode: 1)
             }
             value = v
         }
     case .clipboard, .stdin:
-        if a.secure || a.label != nil || a.explain != nil {
-            emit("note: --secure / --label / --explain only affect the dialog; ignored for \(a.source == .clipboard ? "--from-clipboard" : "--stdin").", to: true)
-        }
+        // No dialog, so no "Storing to:" line to verify — print the destination
+        // instead, before anything is written.
+        emit("→ storing to service=\(sanitize(a.service)) account=\(sanitize(a.account)) (from \(a.source == .clipboard ? "clipboard" : "stdin")\(a.daemon ? ", daemon-readable" : ""))", to: true)
         do {
             value = a.source == .clipboard ? try InputSource.readClipboard() : try InputSource.readStdin()
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
+    let clipboardChangeCount = a.source == .clipboard ? InputSource.clipboardChangeCount() : nil
     do {
         try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
     } catch {
         // On failure the clipboard is left alone so the user can retry.
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
-    // Only after the value is stored AND read back does the token leave the clipboard.
-    if a.source == .clipboard { InputSource.clearClipboard() }
-    let origin = a.source == .clipboard ? " (from clipboard, clipboard cleared)" : (a.source == .stdin ? " (from stdin)" : "")
+    // Only after the value is stored AND read back does the token leave the
+    // clipboard — and only if the clipboard still holds what we read.
+    var origin = a.source == .stdin ? " (from stdin)" : ""
+    if a.source == .clipboard {
+        origin = InputSource.clearClipboard(ifUnchangedSince: clipboardChangeCount)
+            ? " (from clipboard; removed from this Mac's clipboard)"
+            : " (from clipboard; clipboard changed meanwhile, left as is)"
+    }
     // A --daemon store is the one implicit ACL widening left: say so.
     emit(a.daemon ? "✓ stored \(a.service)/\(a.account)\(origin) (daemon-readable: any process can read it without a prompt)"
                   : "✓ stored \(a.service)/\(a.account)\(origin)")

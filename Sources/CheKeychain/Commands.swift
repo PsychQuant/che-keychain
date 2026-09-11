@@ -95,6 +95,12 @@ enum CommandParser {
             throw CommandError.invalidValue(field: "input source", reason: "--from-clipboard and --stdin are mutually exclusive")
         }
         let source: InputSourceKind = fromClipboard ? .clipboard : (fromStdin ? .stdin : .dialog)
+        if source != .dialog && (secure || label != nil || explain != nil) {
+            // Fail closed: a caller asking for the dialog's protections must not
+            // silently get the dialog-less path.
+            throw CommandError.invalidValue(field: fromClipboard ? "--from-clipboard" : "--stdin",
+                                            reason: "--secure, --label and --explain only apply to the dialog; drop them for this source")
+        }
         return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon, source: source)
     }
 

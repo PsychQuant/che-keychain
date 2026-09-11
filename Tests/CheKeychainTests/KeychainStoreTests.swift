@@ -291,27 +291,45 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(KeychainStore.has(service: service, account: "e"))
     }
 
-    func testSaveVerifiesStoredValueAndDeletesOnMismatch() throws {
+    func testSaveVerifiesStoredValueAndCleansUpHonestly() throws {
         defer { KeychainStore.readBackOverride = nil }
-        // Simulate the three ways a read-back can disagree with what was written.
-        let cases: [(String, Data?)] = [("unreadable", nil), ("empty", Data()), ("differs", Data("other".utf8))]
-        for (name, fake) in cases {
+        // A provably bad item (empty / different) is removed by reference.
+        for (name, fake) in [("empty", Data()), ("differs", Data("other".utf8))] {
             KeychainStore.readBackOverride = { _, _ in fake }
             XCTAssertThrowsError(try KeychainStore.save(service: service, account: name, value: "v")) { err in
-                guard case KeychainError.storedValueMismatch(_, let acct, let reason) = err else {
+                guard case KeychainError.storedValueMismatch(_, let acct, let reason, let cleanup) = err else {
                     return XCTFail("\(name): expected .storedValueMismatch, got \(err)")
                 }
                 XCTAssertEqual(acct, name)
-                XCTAssertEqual(reason, name)
+                XCTAssertEqual(reason.rawValue, name)
+                XCTAssertEqual(cleanup, .removed)
             }
             XCTAssertFalse(KeychainStore.has(service: service, account: name), "\(name): the unverified item must be removed")
         }
-        // And the replace path (own item) is verified too.
+        // An unreadable read-back proves nothing about the item: it stays, and the message says so.
+        KeychainStore.readBackOverride = { _, _ in nil }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "locked", value: "v")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, let reason, let cleanup) = err else { return XCTFail("got \(err)") }
+            XCTAssertEqual(reason, .unreadable)
+            XCTAssertEqual(cleanup, .leftInPlace)
+        }
+        XCTAssertTrue(KeychainStore.has(service: service, account: "locked"), "an unreadable item is not deleted")
         KeychainStore.readBackOverride = nil
+        XCTAssertEqual(try readOwn(account: "locked"), "v", "and it was in fact stored correctly")
+    }
+
+    func testRotationMismatchRestoresThePreviousValue() throws {
+        defer { KeychainStore.readBackOverride = nil }
         try KeychainStore.save(service: service, account: "own", value: "v1")
         KeychainStore.readBackOverride = { _, _ in Data("garbage".utf8) }
-        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2"))
-        XCTAssertFalse(KeychainStore.has(service: service, account: "own"))
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, let reason, let cleanup) = err else { return XCTFail("got \(err)") }
+            XCTAssertEqual(reason, .differs)
+            XCTAssertEqual(cleanup, .restoredPrevious)
+        }
+        KeychainStore.readBackOverride = nil
+        XCTAssertEqual(try readOwn(account: "own"), "v1", "the previous secret survives a failed rotation")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own)
     }
 
     func testSaveReadsBackWhatItWroteInBothModes() throws {

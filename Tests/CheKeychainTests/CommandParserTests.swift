@@ -141,6 +141,12 @@ final class CommandParserTests: XCTestCase {
         }
     }
 
+    func testDialogOnlyFlagsAreRefusedWithNonDialogSources() {
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--from-clipboard", "--secure"]))
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--stdin", "--label", "L"]))
+        XCTAssertNoThrow(try CommandParser.parse("set", ["--service", "s", "--account", "a", "--stdin", "--daemon"]))
+    }
+
     func testSetPairHasNoSourceFlags() {
         XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "u", "--secure-account", "p", "--stdin"]))
     }

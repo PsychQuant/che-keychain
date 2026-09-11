@@ -39,14 +39,19 @@ enum AppVersion {
       reports every item it could not remove.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
-      reads the clipboard's text (trimmed of surrounding whitespace and line
-      breaks) and CLEARS the clipboard once the value is stored and verified;
-      `--stdin` reads the first line from a pipe (a terminal is refused —
-      interactive paste is what bracketed-paste mangles). Neither shows the
-      "Storing to:" line, so check --service/--account yourself. The value still
-      never enters argv or stdout. Every store — all three sources, and
-      set-pair — is read back and compared; an empty or different value is
-      removed again and reported, so an empty item can never be created.
+      reads the clipboard's text and, once the value is stored and verified,
+      removes it from this Mac's clipboard (a clipboard manager or Universal
+      Clipboard may keep a copy; on failure the clipboard is left as is);
+      `--stdin` reads the first non-blank line from a pipe and stops at the
+      line break without waiting for EOF (a terminal is refused — interactive
+      paste is what bracketed-paste mangles; more than 64 KiB without a line
+      break is refused). All sources trim surrounding whitespace and line
+      breaks. Neither non-dialog source shows the dialog, so the destination
+      is printed on stderr before the store; --secure/--label/--explain are
+      refused with them. The value never enters argv or stdout. Every store —
+      all three sources, and set-pair — is read back and compared: an empty or
+      different value is removed again (a rotation gets its previous value
+      back); a value that cannot be read back is left in place and reported.
 
       `set` / `set-pair` pop a native NSAlert. The dialog shows the destination
       (service + account) so the user can verify a malicious caller isn't
@@ -75,8 +80,9 @@ enum AppVersion {
       # Daemon-readable secret (launchd agent reads it without a prompt)
       che-keychain set --service bus-eta-logger --account tdx_secret --secure --daemon
 
-      # Paste-free: copy the token, then
-      che-keychain set --service ntu-cool-canvas --account default --from-clipboard --daemon
+      # Paste-free: copy the token, then (prompt-on-read; add --daemon only for
+      # a headless launchd reader — any process could then read it)
+      che-keychain set --service ntu-cool-canvas --account default --from-clipboard
 
       # Automation: pipe it (never a terminal)
       pbpaste | che-keychain set --service ntu-cool-canvas --account default --stdin
