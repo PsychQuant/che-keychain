@@ -13,6 +13,14 @@ Plugin distribution wrapper for the `che-keychain` CLI binary.
 
 Other tools — `CheTransportMCP --setup`, future MCPs, ad-hoc scripts — need to find `che-keychain` via PATH from any process context. Claude Code adds plugin `bin/` to the **Bash tool's** PATH only; MCP server processes and external scripts don't inherit it. `~/bin/` is the stable, system-wide install location that all of those can find.
 
+## 0.3.0 (binary + shell)
+
+- `set --from-clipboard` — the user copies the secret, confirms a dialog (destination, fingerprint, first-line warning when it replaces an existing secret or makes it daemon-readable), and the clipboard is emptied once the store is read back.
+- `set --stdin` — exactly one line from a pipe, no dialog; trusted automation only.
+- Every store is read back and compared; exit codes `0` verified · `1` error · `2` cancelled · `3` stored but unverified · `4` bad item stuck.
+- `set` replaces only items this binary alone can read; anything else is refused with the `unset` command to run first.
+- Only the Developer ID-signed release binary (what this wrapper downloads) presents the dialogs on macOS 27 — an ad-hoc `make release` build hangs (PsychQuant/che-keychain#16).
+
 ## Versioning
 
 `plugin.json` carries two fields, like `che-transport-mcp`:

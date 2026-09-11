@@ -8,8 +8,9 @@
   "plugins": [
     {
       "name": "che-keychain",
+      "version": "0.3.0",
       "source": "./plugin",
-      "description": "Native NSAlert credential prompt rendered inside a signed binary's own process. set / set-pair / has / unset subcommands. Wrapper auto-downloads CheKeychain binary from the GitHub Release to ~/bin/che-keychain on first invocation so other tools (CheTransportMCP --setup, scripts) can find it via PATH lookup.",
+      "description": "Native NSAlert credential prompt rendered inside a signed binary's own process. set (dialog, --from-clipboard, --stdin) / set-pair / has / unset; every store is read back and verified (0.3.0). Wrapper auto-downloads the signed CheKeychain binary from the GitHub Release to ~/bin/che-keychain on first invocation so other tools (CheTransportMCP --setup, scripts) can find it via PATH lookup.",
       "category": "productivity"
     }
   ]
