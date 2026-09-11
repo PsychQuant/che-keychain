@@ -222,7 +222,10 @@ enum CommandParser {
     /// non-dialog value sources (InputSource.normalizeLine) so the "same
     /// policy" claim is one predicate, not two.
     static func containsControlOrFormat(_ s: String) -> Bool {
-        s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f || $0.properties.generalCategory == .format }) })
+        s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { u in
+            let cat = u.properties.generalCategory
+            return u.value < 0x20 || u.value == 0x7f || cat == .control || cat == .format   // .control covers C1 (U+0080–U+009F)
+        }) })
     }
 
     static func validateIdentifier(_ s: String, field: String) throws {

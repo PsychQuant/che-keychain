@@ -62,13 +62,13 @@ enum PromptDialog {
     /// Confirmation-only alert (no input field) for `--from-clipboard` (#6): the
     /// user still sees the destination before anything is read or stored —
     /// the paste problem was in the input field, not in the dialog itself.
-    static func confirm(title: String, destination: String, explain: String?) -> Bool {
+    static func confirm(title: String, destination: String, explain: String?, warning: String? = nil) -> Bool {
         let app = NSApplication.shared
         if app.activationPolicy() != .regular { app.setActivationPolicy(.regular) }
         app.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = buildInformativeText(destination: destination, explain: explain)
+        alert.informativeText = buildInformativeText(destination: destination, explain: explain, warning: warning)
         alert.addButton(withTitle: "Store")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -81,8 +81,12 @@ enum PromptDialog {
 
     // MARK: - Building blocks (factored out for testability)
 
-    static func buildInformativeText(destination: String, explain: String?) -> String {
-        var lines = ["Storing to: \(destination)"]
+    /// `warning` (if any) is the FIRST line, before the caller-controlled
+    /// destination, so a long service/account cannot push it out of view.
+    static func buildInformativeText(destination: String, explain: String?, warning: String? = nil) -> String {
+        var lines: [String] = []
+        if let w = warning, !w.isEmpty { lines.append("⚠ \(w)") }
+        lines.append("Storing to: \(destination)")
         if let e = explain, !e.isEmpty {
             lines.append("")
             lines.append(e)

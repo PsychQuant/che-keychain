@@ -20,11 +20,15 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
 func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, note: String = "") {
     do {
         try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting)
-    } catch let e as KeychainError {
-        die((e.errorDescription ?? "\(e)") + note, exitCode: e.exitCode)
     } catch {
-        die(((error as? LocalizedError)?.errorDescription ?? error.localizedDescription) + note)
+        dieWith(error, note: note)
     }
+}
+
+/// Every error path shares this so a KeychainError always reports its own exit code.
+func dieWith(_ error: Error, note: String = "") -> Never {
+    if let e = error as? KeychainError { die((e.errorDescription ?? "\(e)") + note, exitCode: e.exitCode) }
+    die(((error as? LocalizedError)?.errorDescription ?? error.localizedDescription) + note)
 }
 
 guard argv.count >= 2 else {
@@ -62,7 +66,7 @@ case .set(let a):
     do {
         try KeychainStore.preflight(service: a.service, accounts: [a.account])
     } catch {
-        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        dieWith(error)
     }
     // Take the value from the requested source (#6). The non-dialog sources
     // skip the "Storing to:" line the user would otherwise verify; the value
@@ -101,29 +105,31 @@ case .set(let a):
         do {
             read = try InputSource.readClipboard()
         } catch {
-            die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            // Before any consent, one undifferentiated reason: the caller sees
+            // stderr and the exit code, and must not learn the clipboard's shape.
+            die("the clipboard does not hold exactly one clean line of text (it is empty, padded with whitespace, multi-line, or contains control characters) — copy exactly the value and retry.")
         }
         // Identifiers are validated by the parser, but cap them here too so a
         // long name cannot push the warning and the fingerprint out of view.
-        let destination = "service=\(sanitize(a.service)) account=\(sanitize(a.account))\(a.daemon ? "  ⚠ daemon-readable: any process can read it without a prompt" : "")"
-        // Say whether Store overwrites: preflight passed, so the slot is either
-        // empty or an item this binary alone can read (a probe error is said, not hidden).
+        let destination = "service=\(sanitize(a.service)) account=\(sanitize(a.account))"
+        // Say whether Store overwrites: preflight just passed, so the slot is
+        // either empty or an item this binary alone can read; a probe that fails
+        // now is anomalous and fails CLOSED (no dialog whose claims could be wrong).
         let overwrite: String
-        if let existing = try? KeychainStore.inspectExisting(service: a.service, account: a.account) {
-            switch existing {
-            case .none:
-                overwrite = "New item: nothing is stored at this destination yet."
-                existsAtDialog = false
-            default:
-                overwrite = "⚠ An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
-                    + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
-                existsAtDialog = true
-            }
-        } else {
-            overwrite = "⚠ Could not determine whether an item already exists here; Store would replace one that does."
+        let existing: KeychainStore.Existing
+        do { existing = try KeychainStore.inspectExisting(service: a.service, account: a.account) } catch { dieWith(error) }
+        switch existing {
+        case .none:
+            overwrite = "New item: nothing is stored at this destination yet."
+            existsAtDialog = false
+        default:
+            overwrite = "An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
+                + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
+            existsAtDialog = true
         }
+        let warning = a.daemon ? "daemon-readable: any process can read it without a prompt" : (existsAtDialog == true ? "replaces an existing secret" : nil)
         let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
-        guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain) else {
+        guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain, warning: warning) else {
             emit("Cancelled.", to: true)
             exit(2)
         }
@@ -169,7 +175,7 @@ case .setPair(let a):
     do {
         try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount])
     } catch {
-        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        dieWith(error)
     }
     let visibleLabel = a.visibleLabel ?? a.visibleAccount
     let secureLabel  = a.secureLabel  ?? a.secureAccount
@@ -214,7 +220,7 @@ case .unset(let service, let account):
     do {
         removed = try KeychainStore.unset(service: service, account: account)
     } catch {
-        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        dieWith(error)
     }
     if removed.isEmpty {
         emit("nothing to remove under \(sanitize(service))\(account.map { "/\(sanitize($0))" } ?? "")")

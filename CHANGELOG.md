@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (values)
 
-- Values are never altered silently. The dialog and both `set-pair` fields store exactly what was typed (as before); `--from-clipboard` and `--stdin` drop only LF/CR at the ends of the value (a paste usually carries a trailing newline) and REFUSE a value with leading or trailing whitespace, a line break inside (any Unicode line separator), or control / format characters — the same predicate `--service` / `--account` already use ("it would be stored as typed"). `--stdin` skips leading blank lines but hands the value's own line over untouched. An empty or whitespace-only value is refused for every caller, `set-pair` included (#6).
+- Values are never altered silently. The dialog and both `set-pair` fields store exactly what was typed (as before); `--from-clipboard` and `--stdin` drop only LF/CR at the ends of the value (a paste usually carries a trailing newline) and REFUSE a value with leading or trailing whitespace, a line break inside (any Unicode line separator), or control / format characters (C0, C1, DEL, Cf) — the same predicate `--service` / `--account` already use ("it would be stored as typed"). `--stdin` skips leading blank lines but hands the value's own line over untouched. An empty or whitespace-only value is refused for every caller, `set-pair` included (#6).
 
 ### Added
 

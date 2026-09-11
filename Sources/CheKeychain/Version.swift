@@ -15,7 +15,7 @@ enum AppVersion {
 
     USAGE
       che-keychain set       --service S --account A [--label L] [--explain E] [--secure] [--daemon]
-                             [--from-clipboard | --stdin]
+      che-keychain set       --service S --account A [--daemon] (--from-clipboard | --stdin)
       che-keychain set-pair  --service S --visible-account I --secure-account S \\
                              [--visible-label LI] [--secure-label LS] [--title T] [--explain E]
       che-keychain has       --service S --account A
@@ -56,8 +56,10 @@ enum AppVersion {
       from a pipe and stops at the line break without waiting for EOF; it shows
       NO dialog (the caller already holds the value — use it only from
       automation you trust) and prints the destination on stderr; with --daemon
-      it refuses, at write time, to replace an existing prompt-on-read item
-      (no dialog may widen an ACL; a new allow-all item can still be created).
+      it refuses, at write time, to replace an existing prompt-on-read item:
+      no existing secret's ACL is widened without a dialog. A new allow-all
+      item can still be created — including after an `unset`, which is also
+      dialog-free; that destroys the old secret rather than exposing it.
       Refused, never guessed: a terminal, invalid UTF-8, more than 64 KiB, no
       complete line within 30 s of starting to read, a second line of content
       that arrived within 100 ms of the first, and — for both sources — a line
@@ -92,11 +94,13 @@ enum AppVersion {
       confirmation, or — with --stdin — the caller itself); only the storage ACL
       is relaxed. Use ONLY for low-sensitivity creds.
 
-      Exit codes (set, set-pair): 0 stored and verified · 1 the new value did
-      not land — the slot is unchanged, holds the restored previous value, or
-      is empty; the message says which · 2 cancelled · 3 stored but unverified
-      · 4 bad item stuck (above). `has`: 0 present, 1 absent. `unset`: 0, or 1
-      when some match could not be removed.
+      Exit codes (set, set-pair): 0 stored and verified · 1 any other error,
+      including "the new value did not land" — the slot is unchanged, holds
+      the restored previous value, or is empty; the message says which · 2
+      cancelled · 3 stored but unverified · 4 bad item stuck (above). For
+      set-pair, 3 and 4 refer to the account named in the message; the Note
+      line says what happened to the other one. `has`: 0 present, 1 absent.
+      `unset`: 0, or 1 when some match could not be removed.
 
       `has`  exits 0 if the entry exists, 1 if it does not.
       `unset` removes an account (or all accounts under a service if --account

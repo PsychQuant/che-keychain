@@ -6,6 +6,16 @@ final class PromptDialogTests: XCTestCase {
     // The AppKit dialog itself is exercised manually (it requires a real GUI
     // session). We test only the pure helpers here.
 
+    func testInformativeTextPutsAWarningOnItsOwnFirstLine() {
+        // The caller controls service/account (up to 256 scalars each): a warning
+        // appended after them could be pushed out of view or contradicted.
+        let text = PromptDialog.buildInformativeText(destination: "service=x account=y", explain: "e", warning: "daemon-readable: any process can read it without a prompt")
+        let lines = text.components(separatedBy: "\n")
+        XCTAssertEqual(lines.first, "⚠ daemon-readable: any process can read it without a prompt")
+        XCTAssertEqual(lines[1], "Storing to: service=x account=y")
+        XCTAssertFalse(PromptDialog.buildInformativeText(destination: "d", explain: nil).contains("⚠"))
+    }
+
     func testInformativeTextIncludesDestination() {
         let text = PromptDialog.buildInformativeText(destination: "service=foo account=bar", explain: nil)
         XCTAssertTrue(text.contains("service=foo account=bar"))

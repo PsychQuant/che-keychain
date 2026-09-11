@@ -193,7 +193,8 @@ enum InputSource {
         }
         // Give a slow writer a moment to deliver a second line, so a multi-line
         // value is refused instead of silently truncated (best-effort).
-        if try breakAt != nil && !sawEOF && waitReadable(stdinGraceMilliseconds) {
+        // A poll error here must not throw away an already complete, valid line.
+        if breakAt != nil && !sawEOF && ((try? waitReadable(stdinGraceMilliseconds)) ?? false) {
             buffer.append(handle.availableData)
         }
         guard contentSeen else { throw InputSourceError.emptyStdin }

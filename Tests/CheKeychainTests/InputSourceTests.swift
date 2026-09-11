@@ -74,7 +74,7 @@ final class InputSourceTests: XCTestCase {
                 guard case InputSourceError.embeddedLineBreak = err else { return XCTFail("\(s.debugDescription): got \(err)") }
             }
         }
-        for s in ["a\u{07}b", "a\u{7f}", "\u{1b}[0m", "a\u{200b}b", "a\u{202e}b"] {
+        for s in ["a\u{07}b", "a\u{7f}", "\u{1b}[0m", "a\u{200b}b", "a\u{202e}b", "a\u{80}b", "a\u{9f}", "\u{90}a"] {
             XCTAssertThrowsError(try InputSource.normalizeLine(s, source: "x"), s.debugDescription) { err in
                 guard case InputSourceError.controlCharacters = err else { return XCTFail("\(s.debugDescription): got \(err)") }
             }

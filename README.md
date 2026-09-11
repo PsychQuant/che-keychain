@@ -44,7 +44,7 @@ che-keychain set-pair --service che-transport-tdx \
 # an item already exists there, and a fingerprint of the value (length + SHA-256
 # prefix — a screen observer could confirm a guess of a LOW-entropy secret from
 # it; Return does nothing, Esc cancels); the clipboard is emptied once the store
-# is verified
+# is verified, and only if it still holds what was read
 che-keychain set --service my-api --account token --from-clipboard
 
 # Automation: exactly one line from a pipe (a terminal is refused); no dialog —
@@ -66,7 +66,7 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes for `set` / `set-pair`: `0` stored and verified · `1` the new value did not land (the slot is unchanged, holds the restored previous value, or is empty — the message says which) · `2` user cancelled · `3` stored but unverified (the item is left in place) · `4` a provably bad item is stuck at the destination (`unset` it, then retry). `has`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, or is empty — the message says which) · `2` user cancelled · `3` stored but unverified (the item is left in place) · `4` a provably bad item is stuck at the destination (`unset` it, then retry); for `set-pair`, `3`/`4` refer to the account named in the message. `has`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
 
 ## Security model
 

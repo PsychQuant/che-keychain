@@ -398,7 +398,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .differs, .removalFailed(-25244, previousReplaced: true)) = err else { return XCTFail("got \(err)") }
             let msg = (err as? LocalizedError)?.errorDescription ?? ""
-            XCTAssertTrue(msg.contains("REPLACED the previous value"), msg)
+            XCTAssertTrue(msg.contains("REPLACED the previous value, which is gone"), msg)
         }
     }
 
@@ -409,7 +409,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .unreadable, .leftInPlace(previousReplaced: true)) = err else { return XCTFail("got \(err)") }
             let msg = (err as? LocalizedError)?.errorDescription ?? ""
-            XCTAssertTrue(msg.contains("REPLACED the previous value"), msg)
+            XCTAssertTrue(msg.contains("previous value is GONE"), msg)
         }
         resetSeams()
         XCTAssertEqual(try readOwn(account: "own"), "v2", "the new value is in place (unverified at the time)")
@@ -491,6 +491,13 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(MismatchCleanup.leftInPlace(previousReplaced: true).exitCode, 3)
         XCTAssertEqual(MismatchCleanup.removalFailed(-25244, previousReplaced: false).exitCode, 4)
         XCTAssertEqual(MismatchCleanup.restoreMismatch(.empty).exitCode, 4)
+    }
+
+    func testLeftInPlaceAfterRotationSaysThePreviousValueIsGone() {
+        // This arm never restores anything: the new (unverified) item occupies the slot.
+        let msg = KeychainError.storedValueMismatch(service: "s", account: "a", reason: .unreadable, cleanup: .leftInPlace(previousReplaced: true)).errorDescription ?? ""
+        XCTAssertTrue(msg.contains("previous value is GONE") && msg.contains("nothing was put back"), msg)
+        XCTAssertFalse(msg.contains("re-stored"), msg)
     }
 
     func testRotationRestoredMessageSaysAttributesWereNotPreserved() {

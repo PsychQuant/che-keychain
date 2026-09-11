@@ -129,7 +129,8 @@ enum KeychainError: Error, LocalizedError {
         switch self {
         case .storedValueMismatch(_, _, _, let cleanup): return cleanup.exitCode
         case .replaceFailed(_, _, _, let restore):       return restore.exitCode
-        default:                                         return 1
+        case .osStatus, .notFound, .foreignOwned, .aclWideningRefused, .destinationChanged, .unsupportedItem, .ambiguous, .unattributable, .undeletable, .emptyValue:
+            return 1   // exhaustive on purpose: a new case must choose
         }
     }
     /// Refused to store an empty value (#6): an empty item blocks later writes
@@ -225,7 +226,7 @@ enum KeychainError: Error, LocalizedError {
             \(list)
             """
         case .emptyValue(let svc, let acct):
-            return "refusing to store an empty (or whitespace-only) value for \(svc)/\(acct) — nothing was written."
+            return "refusing to store an empty (or whitespace-only) value for \(sanitize(svc))/\(sanitize(acct)) — nothing was written."
         case .destinationChanged(let svc, let acct, let expected):
             return expected
                 ? "the dialog said an item exists at \(sanitize(svc))/\(sanitize(acct)) and would be replaced, but none exists now — nothing was written. Retry."
@@ -252,7 +253,7 @@ enum KeychainError: Error, LocalizedError {
             case .restoredPrevious:
                 done = "The new value is not in the slot; the previous value was re-stored and read back (as a prompt-on-read item; other item attributes — label, dates — were not preserved)."
             case .restoredUnverified:
-                done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but could not be read back to prove it — check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))` once the keychain is unlocked."
+                done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but could not be read back to prove it — once the keychain is unlocked, read it with the program that uses it, or store it again."
             case .removedPreviousLost(let loss):
                 let why: String
                 switch loss {
@@ -266,15 +267,15 @@ enum KeychainError: Error, LocalizedError {
                 done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but reads back \(why.rawValue) — the slot holds an UNVERIFIED item. Remove it (`che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))`) and store the secret again."
             case .leftInPlace(let replaced):
                 done = replaced
-                    ? "The new item was left in place but is UNVERIFIED, and it has REPLACED the previous value (which was re-stored only if it could be read). Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, and store the secret again to be sure."
-                    : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, then retry the store."
+                    ? "The new item was left in place but is UNVERIFIED; the previous value is GONE (it was deleted for the replace and nothing was put back — the slot is occupied). Unlock the keychain and store the secret again to be sure."
+                    : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. Unlock the keychain and retry the store (a rotation of an own item is allowed)."
             case .removalFailed(let st, let replaced):
                 done = "Removing the just-written item FAILED (\(status(st))) — an unverified item remains\(replaced ? ", and it has REPLACED the previous value, which is gone" : ""): che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct)), then store the secret again"
             case .nothingStored:
                 done = "Nothing was found at that service/account, so nothing verified is stored; if the write landed in a keychain outside the search list, an unverified copy may exist there. Retry."
             }
             return """
-            stored value mismatch for \(svc)/\(acct): \(what).
+            stored value mismatch for \(sanitize(svc))/\(sanitize(acct)): \(what).
               \(done)
             """
         case .replaceFailed(let svc, let acct, let st, let restore):
@@ -284,7 +285,7 @@ enum KeychainError: Error, LocalizedError {
             case .restored:
                 outcome = "The previous value was re-stored as a prompt-on-read item trusted to this binary and read back; other item attributes (label, dates) were not preserved."
             case .restoredUnverified:
-                outcome = "The previous value was re-added as a prompt-on-read item (the keychain accepted it) but could not be read back to prove it — check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))` once the keychain is unlocked."
+                outcome = "The previous value was re-added as a prompt-on-read item (the keychain accepted it) but could not be read back to prove it — once the keychain is unlocked, read it with the program that uses it, or store it again."
             case .mismatch(let why):
                 outcome = "The previous value was re-added but reads back \(why.rawValue) — the slot holds an UNVERIFIED item: `che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))`, then store the secret again."
             case .lost(let loss):
@@ -298,7 +299,7 @@ enum KeychainError: Error, LocalizedError {
                 outcome = "The previous item could NOT be restored (\(why)) — \(svc)/\(acct) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
             }
             return """
-            replacing \(svc)/\(acct) failed: the old item was deleted but adding the new one failed \
+            replacing \(sanitize(svc))/\(sanitize(acct)) failed: the old item was deleted but adding the new one failed \
             (OSStatus \(st)\(text.isEmpty ? "" : ": \(text)")).
               \(outcome)
             """
