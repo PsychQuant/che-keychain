@@ -44,7 +44,8 @@ enum AppVersion {
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
       reads the clipboard's text, then shows a confirmation dialog with the
       destination and a fingerprint of the value (no input field — the paste
-      problem lived there; Return cancels, Store needs a click or ⌘S); nothing is
+      problem lived there; Return does nothing, Esc cancels, Store needs a click
+      or ⌘S; it says whether an item already exists at the destination); nothing is
       stored if the clipboard changed while the dialog was open. Once the value
       is stored and verified the clipboard is emptied (every type on it) if it
       still holds what was read — a clipboard manager or Universal Clipboard may
@@ -52,19 +53,29 @@ enum AppVersion {
       from a pipe and stops at the line break without waiting for EOF; it shows
       NO dialog (the caller already holds the value — use it only from
       automation you trust) and prints the destination on stderr; with --daemon
-      it refuses to replace an existing prompt-on-read item (no dialog may
-      widen an ACL). Refused, never guessed: a terminal, invalid UTF-8, more
-      than 64 KiB, no complete line within 30 s, a second line of content that
-      arrived within 100 ms of the first, and — for both sources — a line break
-      inside the value or leading/trailing whitespace (only LF/CR at the ends
-      are removed; leading blank lines on stdin are skipped). --secure/--label/
-      --explain are refused with both. Dialog values are stored as typed; an
-      empty or whitespace-only value is refused everywhere, set-pair included.
-      Every store is read back and compared: an empty or different value is
-      removed again (a rotation gets its previous value re-stored and read
-      back, or the report says exactly what state the slot is in) → exit 1; an
-      unreadable or ambiguous read leaves the item in place and says whether it
-      replaced a previous value → exit 3 ("written, unverified").
+      it refuses, at write time, to replace an existing prompt-on-read item
+      (no dialog may widen an ACL; a new allow-all item can still be created).
+      Refused, never guessed: a terminal, invalid UTF-8, more than 64 KiB, no
+      complete line within 30 s of starting to read, a second line of content
+      that arrived within 100 ms of the first, and — for both sources — a line
+      break inside the value (any Unicode line separator), control or format
+      characters, or leading/trailing whitespace (only LF/CR at the ends are
+      removed; leading blank lines on stdin are skipped) — the same rule
+      --service/--account have. --secure/--label/--explain are refused with
+      both. Dialog values are stored as typed; an empty or whitespace-only
+      value is refused everywhere, set-pair included.
+      Every store (set, all sources, and set-pair) is read back and compared,
+      and the exit code answers one question — did the new value land?
+        1  no: an empty or different value was removed again; on a rotation
+           the previous value was re-stored and read back, or the report says
+           exactly what state the slot is in (empty, or previous value
+           unverified)
+        3  it is in the slot but could not be verified (keychain locked, or
+           the match was ambiguous); the report says whether it replaced a
+           previous value
+        4  a provably bad item is stuck at the destination (its removal was
+           refused, or the restored previous value reads back wrong): run the
+           `che-keychain unset` command the report gives, then store again
 
       `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
       `--stdin` does not. The dialog shows the destination
@@ -77,6 +88,9 @@ enum AppVersion {
       value comes from the chosen source (the dialog, the clipboard behind a
       confirmation, or — with --stdin — the caller itself); only the storage ACL
       is relaxed. Use ONLY for low-sensitivity creds.
+
+      Exit codes: 0 stored and verified · 1 error, nothing of yours left in the
+      slot · 2 cancelled · 3 stored but unverified · 4 bad item stuck (above).
 
       `has`  exits 0 if the entry exists, 1 if it does not.
       `unset` removes an account (or all accounts under a service if --account

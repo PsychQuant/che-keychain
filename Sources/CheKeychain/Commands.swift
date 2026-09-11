@@ -216,6 +216,15 @@ enum CommandParser {
         }
     }
 
+    /// The character classes no single-line field may carry: line breaks (every
+    /// Unicode newline), C0/C1 controls, DEL, and format characters (bidi
+    /// overrides, zero-width joiners). Shared by identifiers and by the two
+    /// non-dialog value sources (InputSource.normalizeLine) so the "same
+    /// policy" claim is one predicate, not two.
+    static func containsControlOrFormat(_ s: String) -> Bool {
+        s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f || $0.properties.generalCategory == .format }) })
+    }
+
     static func validateIdentifier(_ s: String, field: String) throws {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -226,7 +235,7 @@ enum CommandParser {
         }
         // Check the ORIGINAL string: a value with leading/trailing newlines trims
         // clean but is stored — and echoed into messages — as typed.
-        if s.contains(where: { $0.isNewline || $0.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f || $0.properties.generalCategory == .format }) }) {
+        if containsControlOrFormat(s) {
             throw CommandError.invalidValue(field: field, reason: "contains control or format characters")
         }
     }

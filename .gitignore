@@ -9,3 +9,7 @@ release/
 
 # IDD tree-lock (idd-tree-lock.sh #183) — per-machine session state, not tracked
 .claude/.idd/tree-lock
+
+# IDD per-machine state and attachment manifests — not tracked
+.claude/.idd/state/
+.claude/.idd/attachments/

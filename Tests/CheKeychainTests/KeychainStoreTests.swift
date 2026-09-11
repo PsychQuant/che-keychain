@@ -372,7 +372,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .differs, let cleanup) = err else { return XCTFail("got \(err)") }
             XCTAssertEqual(cleanup, .restoredUnverified)
-            XCTAssertTrue(cleanup.isUnverifiedButPresent)
+            XCTAssertEqual(cleanup.exitCode, 1, "the new value is NOT in the slot — not exit 3 (DA round 5)")
         }
         resetSeams()
         XCTAssertEqual(try readOwn(account: "own"), "v1", "the previous value is in fact back in the slot")
@@ -442,11 +442,55 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertTrue(msg.contains("d: iCloud-synchronized item") && msg.contains("Keychain Access"), msg)
     }
 
-    func testReplaceFailedMessageSaysWhetherTheOldValueSurvived() {
-        let ok = KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restored: true).errorDescription ?? ""
-        XCTAssertTrue(ok.contains("re-stored as a prompt-on-read item") && ok.contains("-25308"), ok)
-        let lost = KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restored: false).errorDescription ?? ""
-        XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("now absent"), lost)
+    func testReplaceFailedMessageSaysWhatHappenedToTheOldValue() {
+        func msg(_ r: MismatchCleanup) -> String { KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: r).errorDescription ?? "" }
+        let ok = msg(.restoredPrevious)
+        XCTAssertTrue(ok.contains("re-stored as a prompt-on-read item") && ok.contains("and read back") && ok.contains("-25308"), ok)
+        let unverified = msg(.restoredUnverified)
+        XCTAssertTrue(unverified.contains("could not be read back to prove it") && !unverified.contains("now absent"), unverified)
+        let lost = msg(.removedPreviousLost(.readdFailed(-25293)))
+        XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("now absent") && lost.contains("-25293"), lost)
+        let wrong = msg(.restoreMismatch(.differs))
+        XCTAssertTrue(wrong.contains("reads back differs") && wrong.contains("unset"), wrong)
+    }
+
+    func testCleanupOutcomesMapToExitCodesByWhetherTheNewValueLanded() {
+        // 1: the new value is NOT in the slot. 3: it is, unverified. 4: a bad item is stuck.
+        for c in [MismatchCleanup.removed, .restoredPrevious, .restoredUnverified, .removedPreviousLost(.previousUnreadable), .removedPreviousLost(.readdVanished), .nothingStored] {
+            XCTAssertEqual(c.exitCode, 1, "\(c)")
+        }
+        XCTAssertEqual(MismatchCleanup.leftInPlace(previousReplaced: false).exitCode, 3)
+        XCTAssertEqual(MismatchCleanup.leftInPlace(previousReplaced: true).exitCode, 3)
+        XCTAssertEqual(MismatchCleanup.removalFailed(-25244, previousReplaced: false).exitCode, 4)
+        XCTAssertEqual(MismatchCleanup.restoreMismatch(.empty).exitCode, 4)
+    }
+
+    func testRemovedPreviousLostNamesTheActualLoss() {
+        func msg(_ l: RestoreLoss) -> String { KeychainError.storedValueMismatch(service: "s", account: "a", reason: .differs, cleanup: .removedPreviousLost(l)).errorDescription ?? "" }
+        XCTAssertTrue(msg(.previousUnreadable).contains("could not be read before the replace"))
+        XCTAssertTrue(msg(.previousEmpty).contains("was itself empty"))
+        XCTAssertTrue(msg(.readdFailed(-25293)).contains("re-add") && msg(.readdFailed(-25293)).contains("-25293"))
+        XCTAssertTrue(msg(.readdVanished).contains("accepted the re-add") && msg(.readdVanished).contains("no item exists"))
+    }
+
+    func testSaveWithoutACLWideningRefusesToTurnAnOwnItemDaemonReadable() throws {
+        // The --stdin path: no dialog, so an existing prompt-on-read item must not
+        // be re-created allow-all. Decided in save() itself, at write time.
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2", daemon: true, mayWidenExistingACL: false)) { err in
+            guard case KeychainError.aclWideningRefused(let s, let a) = err else { return XCTFail("got \(err)") }
+            XCTAssertEqual(s, service); XCTAssertEqual(a, "own")
+            let msg = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(msg.contains("without any dialog") && msg.contains("che-keychain unset"), msg)
+        }
+        XCTAssertEqual(try readOwn(account: "own"), "v1", "the item is untouched")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own, "and still prompt-on-read")
+        // A NEW item may still be created allow-all from stdin (documented decision).
+        try KeychainStore.save(service: service, account: "fresh", value: "v", daemon: true, mayWidenExistingACL: false)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "fresh"), .allowAll)
+        // Same-mode rotation of an own item stays allowed without widening.
+        try KeychainStore.save(service: service, account: "own", value: "v3", daemon: false, mayWidenExistingACL: false)
+        XCTAssertEqual(try readOwn(account: "own"), "v3")
     }
 
     func testForeignOwnedMessageQuotesTheRemedyAndCapsOwners() {

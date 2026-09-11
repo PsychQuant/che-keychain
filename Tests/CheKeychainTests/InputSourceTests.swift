@@ -67,7 +67,18 @@ final class InputSourceTests: XCTestCase {
         XCTAssertThrowsError(try InputSource.normalizeLine("a\nb", source: "x")) { err in
             guard case InputSourceError.embeddedLineBreak = err else { return XCTFail("got \(err)") }
         }
-        XCTAssertEqual(try InputSource.normalizeLine("a\u{85}", source: "x"), "a\u{85}", "only LF/CR are stripped")
+        // Only LF/CR are STRIPPED at the ends; every other line break, anywhere, is refused —
+        // the same characters --service/--account refuse.
+        for s in ["a\u{85}", "a\u{2028}b", "\u{2029}a", "a\u{0b}", "a\u{0c}b"] {
+            XCTAssertThrowsError(try InputSource.normalizeLine(s, source: "x"), s.debugDescription) { err in
+                guard case InputSourceError.embeddedLineBreak = err else { return XCTFail("\(s.debugDescription): got \(err)") }
+            }
+        }
+        for s in ["a\u{07}b", "a\u{7f}", "\u{1b}[0m", "a\u{200b}b", "a\u{202e}b"] {
+            XCTAssertThrowsError(try InputSource.normalizeLine(s, source: "x"), s.debugDescription) { err in
+                guard case InputSourceError.controlCharacters = err else { return XCTFail("\(s.debugDescription): got \(err)") }
+            }
+        }
         XCTAssertEqual(InputSource.typedValue(" a "), " a ", "dialog values are stored as typed")
         XCTAssertNil(InputSource.typedValue("   "))
         XCTAssertTrue(InputSource.fingerprint("abc").hasPrefix("3 bytes, sha256 ba7816bf"))
@@ -93,16 +104,41 @@ final class InputSourceTests: XCTestCase {
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "\r\n\r\ntok\r\n"), isTTY: false), "tok")
     }
 
-    func testStdinIdleWriterTimesOut() {
+    func testStdinSilentWriterTimesOut() {
         // A writer that keeps the pipe open and sends nothing must not hang forever.
-        let saved = InputSource.stdinIdleSeconds
-        InputSource.stdinIdleSeconds = 1
-        defer { InputSource.stdinIdleSeconds = saved }
+        let saved = InputSource.stdinDeadlineSeconds
+        InputSource.stdinDeadlineSeconds = 1
+        defer { InputSource.stdinDeadlineSeconds = saved }
         let p = Pipe()
         XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
             guard case InputSourceError.stdinTimeout = err else { return XCTFail("got \(err)") }
         }
         p.fileHandleForWriting.closeFile()
+    }
+
+    func testStdinDeadlineIsTotalNotPerChunk() {
+        // A drip writer (one byte every 0.3 s, never a line break) must hit the
+        // deadline: an idle timeout that re-arms on every byte would never fire.
+        let saved = InputSource.stdinDeadlineSeconds
+        InputSource.stdinDeadlineSeconds = 1
+        defer { InputSource.stdinDeadlineSeconds = saved }
+        let p = Pipe()
+        let stop = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            while stop.wait(timeout: .now() + 0.3) == .timedOut { p.fileHandleForWriting.write(Data("x".utf8)) }
+        }
+        let started = Date()
+        XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
+            guard case InputSourceError.stdinTimeout = err else { return XCTFail("got \(err)") }
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3, "gave up at the deadline, not much later")
+        stop.signal()
+        p.fileHandleForWriting.closeFile()
+    }
+
+    func testStdinTTYDefaultLooksAtTheHandleGiven() throws {
+        // The tty check must be about the handle we read, not fd 0 of the test runner.
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "tok\n")), "tok")
     }
 
     func testStdinRefusesOverlongLine() throws {

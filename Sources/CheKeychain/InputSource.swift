@@ -21,8 +21,10 @@ enum InputSourceError: Error, LocalizedError {
     case stdinMultiline
     case stdinNotUTF8
     case stdinTimeout(seconds: Int)
+    case stdinReadFailed(errno: Int32)
     case surroundingWhitespace(source: String)
     case embeddedLineBreak(source: String)
+    case controlCharacters(source: String)
 
     var errorDescription: String? {
         switch self {
@@ -33,13 +35,17 @@ enum InputSourceError: Error, LocalizedError {
         case .emptyStdin:
             return "nothing (or only whitespace) was read from stdin — nothing stored."
         case .stdinTooLong(let limit):
-            return "the first line of stdin exceeds \(limit) bytes — refusing to store a truncated value."
+            return "stdin delivered more than \(limit) bytes before a complete line — refusing to store a truncated value."
         case .surroundingWhitespace(let source):
             return "the value from \(source) has leading or trailing whitespace (only line breaks at the ends are stripped) — refusing to store it altered; remove the whitespace and retry."
         case .embeddedLineBreak(let source):
-            return "the value from \(source) contains a line break — a multi-line secret is not supported; copy or pipe exactly one line."
+            return "the value from \(source) contains a line break (LF, CR, or another Unicode line separator) — a multi-line secret is not supported; copy or pipe exactly one line."
+        case .controlCharacters(let source):
+            return "the value from \(source) contains control or format characters — refusing to store it (the same rule --service / --account have)."
         case .stdinTimeout(let seconds):
-            return "no complete line arrived on stdin within \(seconds) s — nothing stored."
+            return "no complete line arrived on stdin within \(seconds) s of starting to read — nothing stored."
+        case .stdinReadFailed(let e):
+            return "reading stdin failed (errno \(e): \(String(cString: strerror(e)))) — nothing stored."
         case .stdinMultiline:
             return "stdin carried more than one line of content — refusing to store only the first line. Pipe exactly one line (a multi-line secret is not supported)."
         case .stdinNotUTF8:
@@ -50,20 +56,25 @@ enum InputSourceError: Error, LocalizedError {
 
 enum InputSource {
     /// Rule for the two non-dialog sources (#6): LF/CR at the ends are dropped
-    /// (a paste usually carries a trailing newline); nothing else is altered —
-    /// a value with leading/trailing whitespace, or a line break inside, is
-    /// refused rather than trimmed or truncated, matching the identifier
-    /// policy ("it would be stored as typed"). Returns nil when nothing but
-    /// blanks is left.
+    /// (a paste usually carries a trailing newline); nothing else is altered.
+    /// Refused rather than trimmed or truncated: leading/trailing whitespace,
+    /// any line break left (LF/CR inside, or any other Unicode line separator
+    /// anywhere), and control/format characters — the same predicate
+    /// `--service` / `--account` use (`CommandParser.containsControlOrFormat`).
+    /// Returns nil when nothing but blanks is left.
     static func normalizeLine(_ raw: String, source: String) throws -> String? {
-        let breaks = CharacterSet(charactersIn: "\n\r")
-        let noBreaks = raw.trimmingCharacters(in: breaks)
+        let noBreaks = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\n\r"))
         if noBreaks.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
-        guard noBreaks.rangeOfCharacter(from: breaks) == nil else {
+        guard !noBreaks.contains(where: { $0.isNewline }) else {
             throw InputSourceError.embeddedLineBreak(source: source)
         }
+        // Surrounding whitespace (a tab is also a control character) is named
+        // first, as the identifier check does: it is the likelier paste accident.
         guard noBreaks == noBreaks.trimmingCharacters(in: .whitespaces) else {
             throw InputSourceError.surroundingWhitespace(source: source)
+        }
+        guard !CommandParser.containsControlOrFormat(noBreaks) else {
+            throw InputSourceError.controlCharacters(source: source)
         }
         return noBreaks
     }
@@ -117,26 +128,40 @@ enum InputSource {
     /// a writer that pauses longer than this and then sends a second line is
     /// not detected (documented).
     static let stdinGraceMilliseconds: Int32 = 100
-    /// How long to wait for the next bytes at all before giving up: a writer
-    /// that keeps the pipe open and sends nothing must not hang us forever.
-    static var stdinIdleSeconds: Int32 = 30
+    /// Total time allowed from the start of the read until a complete line has
+    /// arrived — a deadline, not an idle timeout, so a drip-feeding writer is
+    /// bounded too. A writer that keeps the pipe open must not hang us forever.
+    #if DEBUG
+    static var stdinDeadlineSeconds: Int32 = 30      // tests shorten it
+    #else
+    static let stdinDeadlineSeconds: Int32 = 30
+    #endif
 
     /// Read exactly one line of content from stdin. Reads incrementally and
     /// stops at the first line break (LF or CR) — it does NOT wait for EOF, so
-    /// a writer that keeps the pipe open cannot hang us; an idle writer is
-    /// given `stdinIdleSeconds` per read. Leading BLANK LINES are skipped; the
-    /// value's own line is handed over as is. Refused rather than guessed: a
-    /// terminal (interactive paste is what bracketed-paste mangles), more than
-    /// `stdinLimit` bytes consumed, invalid UTF-8, leading/trailing whitespace
-    /// on the line, and any further non-blank content that arrived by the end
-    /// of a short grace period.
-    static func readStdin(handle: FileHandle = .standardInput, isTTY: Bool = isatty(0) != 0) throws -> String {
-        guard !isTTY else { throw InputSourceError.stdinIsTerminal }
+    /// a writer that keeps the pipe open cannot hang us; the whole read must
+    /// complete within `stdinDeadlineSeconds`. Leading BLANK LINES are skipped;
+    /// the value's own line is handed over as is. Refused rather than guessed:
+    /// a terminal (interactive paste is what bracketed-paste mangles), more
+    /// than `stdinLimit` bytes consumed, invalid UTF-8, leading/trailing
+    /// whitespace on the line, and any further non-blank content that arrived
+    /// by the end of a short grace period. `isTTY` defaults to a check of the
+    /// handle actually read.
+    static func readStdin(handle: FileHandle = .standardInput, isTTY: Bool? = nil) throws -> String {
+        guard !(isTTY ?? (isatty(handle.fileDescriptor) != 0)) else { throw InputSourceError.stdinIsTerminal }
         let isBreak: (UInt8) -> Bool = { $0 == 0x0a || $0 == 0x0d }
         let isBlank: (UInt8) -> Bool = { isBreak($0) || $0 == 0x20 || $0 == 0x09 }
-        func waitReadable(_ ms: Int32) -> Bool {
+        let deadline = DispatchTime.now() + .seconds(Int(stdinDeadlineSeconds))
+        /// Wait up to `ms` (clamped to the deadline) for readable data or EOF.
+        func waitReadable(_ ms: Int32) throws -> Bool {
+            let remaining = Int64(deadline.uptimeNanoseconds) - Int64(DispatchTime.now().uptimeNanoseconds)
+            let budget = Int32(max(0, min(Int64(ms), remaining / 1_000_000)))
             var pfd = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
-            return poll(&pfd, 1, ms) > 0 && (pfd.revents & Int16(POLLIN | POLLHUP)) != 0
+            let n = poll(&pfd, 1, budget)
+            if n < 0 { throw InputSourceError.stdinReadFailed(errno: errno) }
+            if n == 0 { return false }
+            if (pfd.revents & Int16(POLLERR | POLLNVAL)) != 0 { throw InputSourceError.stdinReadFailed(errno: EIO) }
+            return (pfd.revents & Int16(POLLIN | POLLHUP)) != 0
         }
         var buffer = Data()
         var scanned = 0            // bytes already scanned (incremental, O(n))
@@ -145,7 +170,7 @@ enum InputSource {
         var breakAt: Int? = nil
         var sawEOF = false
         while breakAt == nil {
-            guard waitReadable(stdinIdleSeconds * 1000) else { throw InputSourceError.stdinTimeout(seconds: Int(stdinIdleSeconds)) }
+            guard try waitReadable(stdinDeadlineSeconds * 1000) else { throw InputSourceError.stdinTimeout(seconds: Int(stdinDeadlineSeconds)) }
             let chunk = handle.availableData
             if chunk.isEmpty { sawEOF = true; break }                // EOF
             buffer.append(chunk)
@@ -165,7 +190,7 @@ enum InputSource {
         }
         // Give a slow writer a moment to deliver a second line, so a multi-line
         // value is refused instead of silently truncated (best-effort).
-        if breakAt != nil && !sawEOF && waitReadable(stdinGraceMilliseconds) {
+        if try breakAt != nil && !sawEOF && waitReadable(stdinGraceMilliseconds) {
             buffer.append(handle.availableData)
             if buffer.count > stdinLimit { throw InputSourceError.stdinTooLong(limit: stdinLimit) }
         }

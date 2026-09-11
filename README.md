@@ -40,19 +40,21 @@ che-keychain set-pair --service che-transport-tdx \
   --title "TDX setup" \
   --explain "Free TDX account: https://tdx.transportdata.tw/register"
 
-# Paste-free: copy the token; a confirmation dialog shows the destination and a
-# fingerprint of the value (Return cancels); the clipboard is emptied once the
-# store is verified
+# Paste-free: copy the token; a confirmation dialog shows the destination, whether
+# an item already exists there, and a fingerprint of the value (Return does
+# nothing, Esc cancels); the clipboard is emptied once the store is verified
 che-keychain set --service my-api --account token --from-clipboard
 
 # Automation: exactly one line from a pipe (a terminal is refused); no dialog —
 # the caller holds the value, so use this only from automation you trust
 printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --stdin
 
-# Every store is read back and compared; an empty or whitespace-only value is
-# refused. A garbled store is removed again and, on a rotation, the previous
-# value is re-stored — the report states exactly which of the outcomes happened
-# (exit 1). Written-but-unverifiable (locked keychain) exits 3 and keeps the item.
+# Every store (set-pair included) is read back and compared; an empty or
+# whitespace-only value is refused. The exit code says whether the NEW value
+# landed: 1 = no (a garbled store is removed again; on a rotation the previous
+# value is re-stored and the report states exactly which outcome happened),
+# 3 = it is in the slot but could not be verified (locked keychain), 4 = a
+# provably bad item is stuck there — run the `unset` the report gives first.
 
 # Check existence without revealing the value
 che-keychain has --service my-api --account token   # exit 0 if present
@@ -62,7 +64,7 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes: `0` success, `1` error, `2` user cancelled.
+Exit codes: `0` stored and verified, `1` error (nothing of yours is left in the slot), `2` user cancelled, `3` stored but unverified (the item is left in place), `4` a provably bad item is stuck at the destination (`unset` it, then retry).
 
 ## Security model
 
@@ -70,8 +72,8 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 |------|----------------------|
 | Caller invokes `che-keychain set --service X --account Y --secure` | exit code, stderr message |
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
-| Caller invokes `… --from-clipboard` | exit code, stderr; the pasteboard itself is readable by the caller and every process. A confirmation dialog (destination + value fingerprint, Return cancels) gates the store; the clipboard is emptied afterwards if unchanged |
-| Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only. With `--daemon` it refuses to replace an existing prompt-on-read item |
+| Caller invokes `… --from-clipboard` | exit code, stderr; the pasteboard itself is readable by the caller and every process. A confirmation dialog (destination + whether an item already exists there + value fingerprint; Return does nothing, Esc cancels) gates the store; the clipboard is emptied afterwards if unchanged |
+| Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only. With `--daemon` it refuses — at write time, inside `save()` — to replace an existing prompt-on-read item; a new allow-all item can still be created |
 | Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
 

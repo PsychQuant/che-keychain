@@ -13,6 +13,23 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
     exit(exitCode)
 }
 
+/// One store path for `set` and `set-pair`: the exit code follows the cleanup
+/// outcome (1 = the new value is not in the slot; 3 = in the slot, unverified;
+/// 4 = a bad item is stuck — see MismatchCleanup.exitCode). `note` is appended
+/// to any failure (set-pair says what was already written).
+func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, note: String = "") {
+    do {
+        try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL)
+    } catch let e as KeychainError {
+        if case .storedValueMismatch(_, _, _, let cleanup) = e {
+            die((e.errorDescription ?? "\(e)") + note, exitCode: cleanup.exitCode)
+        }
+        die((e.errorDescription ?? "\(e)") + note)
+    } catch {
+        die(((error as? LocalizedError)?.errorDescription ?? error.localizedDescription) + note)
+    }
+}
+
 guard argv.count >= 2 else {
     emit(AppVersion.helpMessage)
     exit(1)
@@ -91,7 +108,18 @@ case .set(let a):
         // Identifiers are validated by the parser, but cap them here too so a
         // long name cannot push the warning and the fingerprint out of view.
         let destination = "service=\(sanitize(a.service)) account=\(sanitize(a.account))\(a.daemon ? "  ⚠ daemon-readable: any process can read it without a prompt" : "")"
-        let explain = "Value: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
+        // Say whether Store overwrites: preflight passed, so the slot is either
+        // empty or an item this binary alone can read (a probe error is said, not hidden).
+        let overwrite: String
+        if let existing = try? KeychainStore.inspectExisting(service: a.service, account: a.account) {
+            switch existing {
+            case .none: overwrite = "New item: nothing is stored at this destination yet."
+            default:    overwrite = "⚠ An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
+            }
+        } else {
+            overwrite = "⚠ Could not determine whether an item already exists here; Store would replace one that does."
+        }
+        let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
         guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain) else {
             emit("Cancelled.", to: true)
             exit(2)
@@ -104,10 +132,9 @@ case .set(let a):
     case .stdin:
         // No dialog: the caller already holds the value, so there is nothing to
         // redirect that it does not already have. What it must NOT be able to do
-        // silently is widen an existing item's ACL to allow-all.
-        if a.daemon, (try? KeychainStore.inspectExisting(service: a.service, account: a.account)) == .own {
-            die("--stdin --daemon would replace an existing prompt-on-read item with an allow-all one without any dialog — refused. Use the dialog or --from-clipboard for that, or `che-keychain unset` first.")
-        }
+        // silently is widen an existing item's ACL to allow-all — refused inside
+        // save() (mayWidenExistingACL: false), at write time, on the same
+        // inspection that decides the replace.
         emit("→ will store to service=\(sanitize(a.service)) account=\(sanitize(a.account)) (from stdin\(a.daemon ? ", daemon-readable" : ""))", to: true)
         do {
             value = try InputSource.readStdin()
@@ -115,17 +142,8 @@ case .set(let a):
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
-    do {
-        try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
-    } catch KeychainError.storedValueMismatch(let svc, let acct, let reason, let cleanup) where cleanup.isUnverifiedButPresent {
-        // Written, but could not be proven right or wrong (locked keychain,
-        // ambiguous match): exit 3 so callers can tell it from a mismatch (1).
-        // The clipboard is left alone so the user can retry.
-        die(KeychainError.storedValueMismatch(service: svc, account: acct, reason: reason, cleanup: cleanup).errorDescription ?? "unverified", exitCode: 3)
-    } catch {
-        // On failure the clipboard is left alone so the user can retry.
-        die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
-    }
+    // On failure the clipboard is left alone so the user can retry.
+    storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon, mayWidenExistingACL: a.source != .stdin)
     // Only after the value is stored AND read back does the token leave the
     // clipboard — and only if the clipboard still holds what we read.
     var origin = a.source == .stdin ? " (from stdin)" : ""
@@ -171,17 +189,9 @@ case .setPair(let a):
         guard let s = InputSource.typedValue(values[a.secureAccount] ?? "") else {
             die("\(a.secureAccount) is empty — nothing stored.", exitCode: 1)
         }
-        do {
-            try KeychainStore.save(service: a.service, account: a.visibleAccount, value: v)
-        } catch {
-            die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
-        }
-        do {
-            try KeychainStore.save(service: a.service, account: a.secureAccount,  value: s)
-        } catch {
-            let msg = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            die(msg + "\n  Note: \(a.service)/\(a.visibleAccount) WAS stored before this failure; the pair is now inconsistent until you re-run set-pair.")
-        }
+        storeOrDie(service: a.service, account: a.visibleAccount, value: v)
+        storeOrDie(service: a.service, account: a.secureAccount, value: s,
+                   note: "\n  Note: \(a.service)/\(a.visibleAccount) WAS stored before this failure; the pair is now inconsistent until you re-run set-pair.")
         emit("✓ stored \(a.service)/{\(a.visibleAccount), \(a.secureAccount)}")
     }
 
