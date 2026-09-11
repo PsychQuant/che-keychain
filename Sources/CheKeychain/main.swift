@@ -88,8 +88,10 @@ case .set(let a):
         } catch {
             die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
-        let destination = "service=\(a.service) account=\(a.account)\(a.daemon ? "  (daemon-readable: any process can read it without a prompt)" : "")"
-        let explain = "Value: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return cancels; click Store or press ⌘S to confirm."
+        // Identifiers are validated by the parser, but cap them here too so a
+        // long name cannot push the warning and the fingerprint out of view.
+        let destination = "service=\(sanitize(a.service)) account=\(sanitize(a.account))\(a.daemon ? "  ⚠ daemon-readable: any process can read it without a prompt" : "")"
+        let explain = "Value: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
         guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain) else {
             emit("Cancelled.", to: true)
             exit(2)
@@ -101,7 +103,11 @@ case .set(let a):
         clipboardChangeCountAtRead = before
     case .stdin:
         // No dialog: the caller already holds the value, so there is nothing to
-        // redirect that it does not already have. Say where it will go.
+        // redirect that it does not already have. What it must NOT be able to do
+        // silently is widen an existing item's ACL to allow-all.
+        if a.daemon, (try? KeychainStore.inspectExisting(service: a.service, account: a.account)) == .own {
+            die("--stdin --daemon would replace an existing prompt-on-read item with an allow-all one without any dialog — refused. Use the dialog or --from-clipboard for that, or `che-keychain unset` first.")
+        }
         emit("→ will store to service=\(sanitize(a.service)) account=\(sanitize(a.account)) (from stdin\(a.daemon ? ", daemon-readable" : ""))", to: true)
         do {
             value = try InputSource.readStdin()
@@ -111,6 +117,11 @@ case .set(let a):
     }
     do {
         try KeychainStore.save(service: a.service, account: a.account, value: value, daemon: a.daemon)
+    } catch KeychainError.storedValueMismatch(let svc, let acct, let reason, let cleanup) where cleanup.isUnverifiedButPresent {
+        // Written, but could not be proven right or wrong (locked keychain,
+        // ambiguous match): exit 3 so callers can tell it from a mismatch (1).
+        // The clipboard is left alone so the user can retry.
+        die(KeychainError.storedValueMismatch(service: svc, account: acct, reason: reason, cleanup: cleanup).errorDescription ?? "unverified", exitCode: 3)
     } catch {
         // On failure the clipboard is left alone so the user can retry.
         die((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)

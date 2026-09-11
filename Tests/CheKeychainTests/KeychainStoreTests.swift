@@ -317,7 +317,7 @@ final class KeychainStoreTests: XCTestCase {
         }
         // An unreadable read-back proves nothing about the item: it stays, and the message says so.
         KeychainStore.readBackOverride = nil
-        KeychainStore.readBackReasonOverride = .unreadable
+        KeychainStore.readBackReasonOverride = { _, _ in .unreadable }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "locked", value: "v")) { err in
             guard case KeychainError.storedValueMismatch(_, _, let reason, let cleanup) = err else { return XCTFail("got \(err)") }
             XCTAssertEqual(reason, .unreadable)
@@ -333,7 +333,7 @@ final class KeychainStoreTests: XCTestCase {
             XCTAssertEqual(reason, .missing); XCTAssertEqual(cleanup, .nothingStored)
         }
         // Ambiguous: left in place. Removal refused: reported with the OSStatus.
-        resetSeams(); KeychainStore.readBackReasonOverride = .ambiguous
+        resetSeams(); KeychainStore.readBackReasonOverride = { _, _ in .ambiguous }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "amb", value: "v")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .ambiguous, .leftInPlace(previousReplaced: false)) = err else { return XCTFail("got \(err)") }
         }
@@ -365,16 +365,29 @@ final class KeychainStoreTests: XCTestCase {
     func testRotationRestoreThatCannotBeReadBackIsReportedAsUnverifiedNotLost() throws {
         defer { resetSeams() }
         try KeychainStore.save(service: service, account: "own", value: "v1")
-        // First read-back (new value) differs; the restore's read-back cannot be read.
+        // 1st read-back (new value): differs → delete + restore; 2nd (the restore): unreadable.
         var calls = 0
-        KeychainStore.readBackOverride = { _, _ in calls += 1; return calls == 1 ? Data("garbage".utf8) : nil }
-        // nil from the override means .missing; use the reason override for the second call instead.
-        KeychainStore.readBackOverride = { _, _ in calls += 1; return Data("garbage".utf8) }
+        KeychainStore.readBackOverride = { _, _ in Data("garbage".utf8) }
+        KeychainStore.readBackReasonOverride = { _, _ in calls += 1; return calls == 2 ? .unreadable : nil }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .differs, let cleanup) = err else { return XCTFail("got \(err)") }
-            // Second read-back also "differs" (override returns garbage for the restore too) → lost.
-            XCTAssertEqual(cleanup, .removedPreviousLost(restoreStatus: errSecDecode))
+            XCTAssertEqual(cleanup, .restoredUnverified)
+            XCTAssertTrue(cleanup.isUnverifiedButPresent)
         }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "own"), "v1", "the previous value is in fact back in the slot")
+    }
+
+    func testRotationRestoreThatReadsBackWrongIsReportedAsRestoreMismatch() throws {
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        // Both read-backs differ: the restore is accepted but unverified-wrong.
+        KeychainStore.readBackOverride = { _, _ in Data("garbage".utf8) }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .differs, .restoreMismatch(.differs)) = err else { return XCTFail("got \(err)") }
+        }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "own"), "v1")
     }
 
     func testRotationRemovalFailureSaysThePreviousValueIsGone() throws {
@@ -392,7 +405,7 @@ final class KeychainStoreTests: XCTestCase {
     func testRotationUnreadableReadBackSaysThePreviousValueWasReplaced() throws {
         defer { resetSeams() }
         try KeychainStore.save(service: service, account: "own", value: "v1")
-        KeychainStore.readBackReasonOverride = .unreadable
+        KeychainStore.readBackReasonOverride = { _, _ in .unreadable }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
             guard case KeychainError.storedValueMismatch(_, _, .unreadable, .leftInPlace(previousReplaced: true)) = err else { return XCTFail("got \(err)") }
             let msg = (err as? LocalizedError)?.errorDescription ?? ""

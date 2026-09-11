@@ -13,6 +13,16 @@ enum MismatchReason: String {
 }
 
 enum MismatchCleanup: Equatable {
+    /// True when something is stored at the destination but could not be
+    /// proven right or wrong (locked keychain / ambiguous) — the CLI reports
+    /// this with exit code 3 instead of 1, so callers can tell "written,
+    /// unverified" from "mismatch, cleaned up".
+    var isUnverifiedButPresent: Bool {
+        switch self {
+        case .leftInPlace, .restoredUnverified: return true
+        default: return false
+        }
+    }
     /// Fresh store: the just-written item was deleted by reference; the slot is empty as before.
     case removed
     /// Rotation: the new value is not in the slot; the previous value was re-stored and read back.
@@ -21,8 +31,11 @@ enum MismatchCleanup: Equatable {
     /// (locked keychain / ambiguous) — almost certainly intact, not proven.
     case restoredUnverified
     /// Rotation: the new value is not in the slot and the previous value could NOT be put back
-    /// (it was not readable before the delete, re-adding it failed, or the re-add read back wrong). The slot is empty.
+    /// (it was not readable before the delete, or re-adding it failed). The slot is empty.
     case removedPreviousLost(restoreStatus: OSStatus?)
+    /// Rotation: the previous value was re-added (the keychain accepted it) but reads back
+    /// wrong (`reason`: missing / empty / differs) — the slot holds something unverified.
+    case restoreMismatch(MismatchReason)
     /// The item was left in place (unreadable / ambiguous: nothing proves it is bad).
     /// `previousReplaced` = this was a rotation, so the previous value is gone and the
     /// unverified new one now occupies the slot.
@@ -180,6 +193,8 @@ enum KeychainError: Error, LocalizedError {
                 done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but could not be read back to prove it — check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))` once the keychain is unlocked."
             case .removedPreviousLost(let st):
                 done = "The new value is not in the slot, and the PREVIOUS value could NOT be put back\(st.map { " (re-add: \(status($0)))" } ?? " (it could not be read before the replace)"). The slot is now EMPTY: store the secret again."
+            case .restoreMismatch(let why):
+                done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but reads back \(why.rawValue) — the slot holds an UNVERIFIED item. Remove it (`che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))`) and store the secret again."
             case .leftInPlace(let replaced):
                 done = replaced
                     ? "The new item was left in place but is UNVERIFIED, and it has REPLACED the previous value (which was re-stored only if it could be read). Unlock the keychain, check with `che-keychain has --service \(shellQuote(svc)) --account \(shellQuote(acct))`, and store the secret again to be sure."
@@ -187,7 +202,7 @@ enum KeychainError: Error, LocalizedError {
             case .removalFailed(let st, let replaced):
                 done = "Removing the just-written item FAILED (\(status(st))) — an unverified item remains\(replaced ? ", and it has REPLACED the previous value, which is gone" : ""): che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct)), then store the secret again"
             case .nothingStored:
-                done = "Nothing is stored. Retry; if it persists, the keychain the item was written to may not be in the search list."
+                done = "Nothing was found at that service/account, so nothing verified is stored; if the write landed in a keychain outside the search list, an unverified copy may exist there. Retry."
             }
             return """
             stored value mismatch for \(svc)/\(acct): \(what).
@@ -355,7 +370,9 @@ enum KeychainStore {
     /// (`.unreadable`, `.ambiguous`); `deleteWrittenOverride` forces the
     /// cleanup outcome so the `.removalFailed` path is testable.
     static var readBackOverride: ((String, String) -> Data?)?
-    static var readBackReasonOverride: MismatchReason?
+    /// Consulted on every read-back; a non-nil result forces that reason (so a
+    /// test can make the SECOND read-back — the restore's — unreadable).
+    static var readBackReasonOverride: ((String, String) -> MismatchReason?)?
     static var deleteWrittenOverride: MismatchCleanup?
     #endif
 
@@ -379,7 +396,7 @@ enum KeychainStore {
     /// where the write went; exactly one file-keychain item must match.
     private static func readBack(service: String, account: String, expected: Data) -> ReadBack {
         #if DEBUG
-        if let forced = readBackReasonOverride { return ReadBack(mismatch: forced, item: nil) }
+        if let forced = readBackReasonOverride?(service, account) { return ReadBack(mismatch: forced, item: nil) }
         #endif
         return withoutInteraction {
             let q: [String: Any] = [
@@ -467,7 +484,11 @@ enum KeychainStore {
         guard dst == errSecSuccess else { throw KeychainError.osStatus(dst, operation: "set (delete own item before re-creating it)") }
         let ast = addRaw(service: service, account: account, data: Data(value.utf8), access: access, keychain: keychain)
         guard ast == errSecSuccess else {
-            let restored = old.map { addRaw(service: service, account: account, data: $0, access: nil, keychain: keychain) == errSecSuccess } ?? false
+            // "Restored" is claimed only when the re-add is read back intact.
+            let restored: Bool = old.map { o in
+                addRaw(service: service, account: account, data: o, access: nil, keychain: keychain) == errSecSuccess
+                    && readBack(service: service, account: account, expected: o).mismatch == nil
+            } ?? false
             throw KeychainError.replaceFailed(service: service, account: account, addStatus: ast, restored: restored)
         }
         // Verify while the previous value is still in hand (it is wiped on exit),
@@ -505,7 +526,9 @@ enum KeychainStore {
         switch readBack(service: service, account: account, expected: o).mismatch {
         case nil:                           return .restoredPrevious
         case .unreadable?, .ambiguous?:     return .restoredUnverified
-        case .missing?, .empty?, .differs?: return .removedPreviousLost(restoreStatus: errSecDecode)
+        case .missing?:                     return .removedPreviousLost(restoreStatus: nil)
+        case .empty?:                       return .restoreMismatch(.empty)
+        case .differs?:                     return .restoreMismatch(.differs)
         }
     }
 

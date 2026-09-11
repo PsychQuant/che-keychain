@@ -51,17 +51,20 @@ enum AppVersion {
       keep a copy; on failure it is left as is. `--stdin` reads exactly one line
       from a pipe and stops at the line break without waiting for EOF; it shows
       NO dialog (the caller already holds the value — use it only from
-      automation you trust) and prints the destination on stderr. Refused, never
-      guessed: a terminal, invalid UTF-8, more than 64 KiB, a second line of
-      content that arrived within 100 ms of the first, and — for both sources —
-      a line with leading or trailing whitespace (only line breaks at the ends
-      are removed). --secure/--label/--explain are refused with both. Dialog
-      values are stored as typed; an empty or whitespace-only value is refused
-      everywhere, set-pair included. Every store is read back and compared: an
-      empty or different value is removed again (a rotation gets its previous
-      value re-stored and read back, or the report says exactly what state the
-      slot is in); an unreadable or ambiguous read leaves the item and says
-      whether it replaced a previous value.
+      automation you trust) and prints the destination on stderr; with --daemon
+      it refuses to replace an existing prompt-on-read item (no dialog may
+      widen an ACL). Refused, never guessed: a terminal, invalid UTF-8, more
+      than 64 KiB, no complete line within 30 s, a second line of content that
+      arrived within 100 ms of the first, and — for both sources — a line break
+      inside the value or leading/trailing whitespace (only LF/CR at the ends
+      are removed; leading blank lines on stdin are skipped). --secure/--label/
+      --explain are refused with both. Dialog values are stored as typed; an
+      empty or whitespace-only value is refused everywhere, set-pair included.
+      Every store is read back and compared: an empty or different value is
+      removed again (a rotation gets its previous value re-stored and read
+      back, or the report says exactly what state the slot is in) → exit 1; an
+      unreadable or ambiguous read leaves the item in place and says whether it
+      replaced a previous value → exit 3 ("written, unverified").
 
       `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
       `--stdin` does not. The dialog shows the destination
@@ -92,8 +95,9 @@ enum AppVersion {
       # Daemon-readable secret (launchd agent reads it without a prompt)
       che-keychain set --service bus-eta-logger --account tdx_secret --secure --daemon
 
-      # Paste-free: copy the token, then (prompt-on-read; add --daemon only for
-      # a headless launchd reader — any process could then read it)
+      # Paste-free: copy the token, then run this and confirm the dialog (stored
+      # prompt-on-read; add --daemon only for a headless launchd reader — any
+      # process could then read it)
       che-keychain set --service ntu-cool-canvas --account default --from-clipboard
 
       # Automation: pipe exactly one line (never a terminal). Note `pbpaste` leaves

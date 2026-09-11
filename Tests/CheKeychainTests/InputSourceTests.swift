@@ -14,9 +14,11 @@ final class InputSourceTests: XCTestCase {
 
     func testStdinReadsOneLineAndDropsLineBreaks() throws {
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "tok3n\r\n"), isTTY: false), "tok3n")
-        // Leading/trailing whitespace is refused, not trimmed (stored-as-typed policy).
-        XCTAssertThrowsError(try InputSource.readStdin(handle: pipe(with: "  tok3n \n"), isTTY: false)) { err in
-            guard case InputSourceError.surroundingWhitespace = err else { return XCTFail("got \(err)") }
+        // Leading OR trailing whitespace is refused, not trimmed (stored-as-typed policy).
+        for text in ["  tok3n\n", "\ttok3n\n", "tok3n \n", "\n\n  tok3n\n"] {
+            XCTAssertThrowsError(try InputSource.readStdin(handle: pipe(with: text), isTTY: false)) { err in
+                guard case InputSourceError.surroundingWhitespace = err else { return XCTFail("\(text.debugDescription): got \(err)") }
+            }
         }
         // No trailing newline at all is fine too; CR-only line endings count as breaks.
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "bare"), isTTY: false), "bare")
@@ -62,6 +64,10 @@ final class InputSourceTests: XCTestCase {
         XCTAssertEqual(try InputSource.normalizeLine("a b\n", source: "x"), "a b")
         XCTAssertNil(try InputSource.normalizeLine(" \n\t", source: "x"))
         XCTAssertThrowsError(try InputSource.normalizeLine(" a", source: "x"))
+        XCTAssertThrowsError(try InputSource.normalizeLine("a\nb", source: "x")) { err in
+            guard case InputSourceError.embeddedLineBreak = err else { return XCTFail("got \(err)") }
+        }
+        XCTAssertEqual(try InputSource.normalizeLine("a\u{85}", source: "x"), "a\u{85}", "only LF/CR are stripped")
         XCTAssertEqual(InputSource.typedValue(" a "), " a ", "dialog values are stored as typed")
         XCTAssertNil(InputSource.typedValue("   "))
         XCTAssertTrue(InputSource.fingerprint("abc").hasPrefix("3 bytes, sha256 ba7816bf"))
@@ -84,6 +90,19 @@ final class InputSourceTests: XCTestCase {
 
     func testStdinSkipsLeadingBlankLines() throws {
         XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "\n  \ntok\n"), isTTY: false), "tok")
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "\r\n\r\ntok\r\n"), isTTY: false), "tok")
+    }
+
+    func testStdinIdleWriterTimesOut() {
+        // A writer that keeps the pipe open and sends nothing must not hang forever.
+        let saved = InputSource.stdinIdleSeconds
+        InputSource.stdinIdleSeconds = 1
+        defer { InputSource.stdinIdleSeconds = saved }
+        let p = Pipe()
+        XCTAssertThrowsError(try InputSource.readStdin(handle: p.fileHandleForReading, isTTY: false)) { err in
+            guard case InputSourceError.stdinTimeout = err else { return XCTFail("got \(err)") }
+        }
+        p.fileHandleForWriting.closeFile()
     }
 
     func testStdinRefusesOverlongLine() throws {

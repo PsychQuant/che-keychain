@@ -50,7 +50,9 @@ che-keychain set --service my-api --account token --from-clipboard
 printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --stdin
 
 # Every store is read back and compared; an empty or whitespace-only value is
-# refused; a garbled store is removed again (a rotation gets its previous value back).
+# refused. A garbled store is removed again and, on a rotation, the previous
+# value is re-stored — the report states exactly which of the outcomes happened
+# (exit 1). Written-but-unverifiable (locked keychain) exits 3 and keeps the item.
 
 # Check existence without revealing the value
 che-keychain has --service my-api --account token   # exit 0 if present
@@ -69,7 +71,7 @@ Exit codes: `0` success, `1` error, `2` user cancelled.
 | Caller invokes `che-keychain set --service X --account Y --secure` | exit code, stderr message |
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
 | Caller invokes `… --from-clipboard` | exit code, stderr; the pasteboard itself is readable by the caller and every process. A confirmation dialog (destination + value fingerprint, Return cancels) gates the store; the clipboard is emptied afterwards if unchanged |
-| Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only |
+| Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only. With `--daemon` it refuses to replace an existing prompt-on-read item |
 | Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
 
