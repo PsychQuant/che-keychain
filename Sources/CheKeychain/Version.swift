@@ -24,6 +24,11 @@ enum AppVersion {
       che-keychain --help
 
     DETAILS
+      Dialog labels: `set --label` sets the dialog title and input field's
+      label. For `set-pair`, --visible-label and --secure-label label the
+      two input fields; --title sets the dialog title. These options do not
+      set the stored item's label in Keychain Access.
+
       `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
       binary and nothing else, the item is deleted by reference and re-created
       with the new value and the requested ACL (the old value is re-stored if

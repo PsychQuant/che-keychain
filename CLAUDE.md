@@ -44,7 +44,7 @@ Exit codes you should react to (`set` / `set-pair`, 0.3.0+): `0` stored and veri
 
 ## Discipline
 
-1. **Always pick a meaningful `--label` and `--explain`** — the user sees them in the dialog. "Enter your API token" beats default account-name placeholder.
+1. **Always pick a meaningful `--label` and `--explain`** — the user sees them in the dialog. "Enter your API token" beats default account-name placeholder. `set --label` sets the dialog title and input field's label only; it does not set the stored item's label in Keychain Access. For `set-pair`, use `--visible-label` / `--secure-label` for the two field labels and `--title` for the dialog title.
 2. **Service names should be globally unique-ish** — prefix with your tool's namespace (`che-transport-tdx`, `my-app-deploy-key`). Don't reuse common names like `default` / `api-key`.
 3. **The destination shown in the dialog is non-negotiable** — che-keychain renders `service=X account=Y` in the informative text. Users can verify it. Don't rely on a custom label hiding the real destination.
 4. **che-keychain has no `get` subcommand on purpose** — your consumer binary reads the value itself with `SecItemCopyMatching` under the same service/account. (Since 0.3.0 every `set` reads its own write back and compares it, so a `0` exit means the value is really there; that read-back is internal and never printed.)
