@@ -109,6 +109,14 @@ enum AppVersion {
       line says what happened to the other one. `has`: 0 present, 1 absent.
       `unset`: 0, or 1 when some match could not be removed.
 
+      Keychain errors from set, set-pair and unset (including write-verification
+      and restore failures) may include a numeric OSStatus and a description
+      supplied by macOS. The description can vary with the system language;
+      search by the numeric OSStatus, not the localized wording. OSStatus
+      values are separate from the CLI exit codes above. Scripts should use
+      the CLI exit code for the command's outcome, not exact stderr text.
+      `has` reports only 0 or 1 and does not print these error descriptions.
+
       `has`  exits 0 if the entry exists, 1 if it does not.
       `unset` removes an account (or all accounts under a service if --account
       omitted).
