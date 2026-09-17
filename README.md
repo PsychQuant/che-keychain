@@ -70,6 +70,8 @@ Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other erro
 
 Dialog labels only affect the prompt: `set --label` sets both the dialog title and the input field's label. For `set-pair`, `--visible-label` and `--secure-label` label the two input fields, while `--title` sets the dialog title. None of these options sets the stored item's label in Keychain Access.
 
+`set-pair` remains dialog-only: it does not accept `--stdin`, `--from-clipboard`, or `--daemon`. This keeps both values in one explicit input dialog without introducing an ambiguous two-value stream format. For automation, invoke `set --stdin` separately for each account and check each exit code. The two writes are not an atomic transaction: if the second fails, the first may already be stored. Each write retains its own read-back verification and the exit-code contract above.
+
 Keychain errors from `set`, `set-pair`, or `unset`, including write-verification and restore failures, may include a numeric `OSStatus` followed by a description supplied by macOS. That description can vary with the system language; use the numeric OSStatus when searching for an error, rather than matching the localized wording. For example, `OSStatus -25299` identifies a duplicate-item error regardless of the description's language.
 
 The CLI exit codes listed above describe the command's outcome; they are separate from the underlying OSStatus values in diagnostics. Scripts should use the CLI exit code to determine the outcome and should not depend on the exact stderr wording. `has` reports only exit code `0` or `1` and does not print these keychain error descriptions.

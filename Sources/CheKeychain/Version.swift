@@ -29,6 +29,12 @@ enum AppVersion {
       two input fields; --title sets the dialog title. These options do not
       set the stored item's label in Keychain Access.
 
+      `set-pair` is dialog-only. It does not accept --stdin,
+      --from-clipboard or --daemon. Automation should invoke `set --stdin`
+      separately for each account and check each exit code. These two writes
+      are not atomic: the first may be stored even if the second fails.
+      Each write still uses read-back verification and the exit codes below.
+
       `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
       binary and nothing else, the item is deleted by reference and re-created
       with the new value and the requested ACL (the old value is re-stored if
