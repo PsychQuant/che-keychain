@@ -21,13 +21,32 @@ enum PromptDialog {
     /// The one sentence that must survive on the dialog's protected first line.
     /// Both facts are kept when both hold — the worst combination (an existing
     /// secret destroyed AND made world-readable) must not lose one of them.
-    static func warningText(daemon: Bool, replaces: Bool) -> String? {
-        switch (daemon, replaces) {
-        case (false, false): return nil
-        case (true, false):  return "daemon-readable ACL: other keychain authorization may still be required"
-        case (false, true):  return "replaces an existing secret"
-        case (true, true):   return "replaces an existing secret AND sets a daemon-readable ACL: other keychain authorization may still be required"
+    ///
+    /// `replacing` is the destination's current access class, so the line can say
+    /// what is there now and what the replacement turns it into. "Replaces an
+    /// existing secret" alone does not let anyone judge the change: replacing a
+    /// world-readable item with a binary-only one narrows access, and the reverse
+    /// widens it, and the dialog is the last place either can be stopped (#7 L1).
+    static func warningText(daemon: Bool, replacing existing: KeychainStore.Existing) -> String? {
+        let becomes = daemon
+            ? "one any application can read (other keychain authorization may still be required)"
+            : "one only this binary can read"
+        let now: String
+        switch existing {
+        case .none:
+            return daemon ? "daemon-readable ACL: other keychain authorization may still be required" : nil
+        case .own:
+            now = "a secret only this binary can read"
+        case .allowAll:
+            now = "a secret ANY application can read"
+        case .foreign(let owners):
+            now = owners.isEmpty
+                ? "a secret nothing ties to this binary"
+                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read — that access ends"
+        case .unsupported:
+            now = "an existing secret whose access this binary cannot inspect"
         }
+        return "replaces \(now) with \(becomes)"
     }
 
     static func run(title: String, destination: String, explain: String?, fields: [PromptField], warning: String? = nil) -> PromptResult {

@@ -56,7 +56,7 @@ printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --std
 # landed: 1 = no (a garbled store is removed again; on a rotation the previous
 # value is re-stored and the report states exactly which outcome happened),
 # 3 = it is in the slot but could not be verified (locked keychain), 4 = a
-# provably bad item is stuck there — run the `unset` the report gives first.
+# restore did not match the backup — inspect the destination before retrying.
 
 # Check existence without revealing the value
 che-keychain has --service my-api --account token   # exit 0 if present
@@ -66,7 +66,7 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, is empty, or could not be determined — the message says which) · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` cleanup of a proven bad item failed, or restored bytes/access settings do not match (follow the report before retrying); for `set-pair`, `3`/`4` refer to the account named in the message. `has` without `--non-empty`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, is empty, or could not be determined — the message says which) · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item that is not the one that was backed up (nothing is deleted after a write the keychain accepted, so this is the only outcome that leaves an unproven item behind; inspect it before retrying); for `set-pair`, `3`/`4` refer to the account named in the message. `has` without `--non-empty`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
 
 Dialog labels only affect the prompt: `set --label` sets both the dialog title and the input field's label. For `set-pair`, `--visible-label` and `--secure-label` label the two input fields, while `--title` sets the dialog title. None of these options sets the stored item's label in Keychain Access.
 

@@ -111,9 +111,11 @@ enum AppVersion {
            the match was ambiguous); cleanup leaves the destination alone.
            Inspect ambiguous matches in Keychain Access; unlocking is not a remedy
            for multiple matches. The report says whether a previous item was deleted.
-        4  a provably bad item is stuck at the destination (its removal was
-           attempted but failed, or restored bytes/access settings do not match): run the
-           `che-keychain unset` command the report gives, then store again
+        4  a restore was accepted whose bytes or access settings do not match
+           the backup: the destination holds an item that is not the one that
+           was backed up. Nothing is deleted after a write the keychain has
+           accepted, so this is the only outcome that leaves an unproven item
+           behind; inspect the destination in Keychain Access before retrying.
 
       `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
       `--stdin` does not. The dialog's first line warns when Store replaces
@@ -140,7 +142,8 @@ enum AppVersion {
       including "the new value did not land" — the slot is unchanged, holds
       the restored previous value, is empty, or has an unknown state;
       the message says which · 2
-      cancelled · 3 write accepted but unverified · 4 bad item stuck (above). For
+      cancelled · 3 write accepted but unverified · 4 restore does not match the
+      backup (above). For
       set-pair, 3 and 4 refer to the account named in the message; the Note
       line says what happened to the other one. plain `has`: 0 present, 1 absent.
       `unset`: 0, or 1 when some match could not be removed.

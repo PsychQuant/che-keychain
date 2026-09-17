@@ -62,11 +62,6 @@ enum CleanupRefusal: String {
 
 enum MismatchCleanup: Equatable {
     /// Exit code for the CLI, based on observed results.
-    ///   1: error; unchanged, empty, restored, or unknown destination state.
-    ///   3: write accepted but not verified (locked keychain / ambiguous).
-    ///   4: a provably bad item is stuck at the destination (removal refused, or the
-    ///      restored previous value reads back wrong) — `unset` before retrying.
-    /// Exit code for the CLI, based on observed results.
     ///   1: error; the destination was left alone or holds nothing.
     ///   3: write accepted but not verified (locked keychain / ambiguous).
     /// Nothing here returns 4: once the keychain has accepted a write this

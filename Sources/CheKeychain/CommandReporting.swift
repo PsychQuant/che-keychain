@@ -4,7 +4,7 @@ import Foundation
 func pairFirstStoreNote(service: String, account: String, firstError: KeychainError?) -> String {
     let destination = "\(sanitize(service))/\(sanitize(account))"
     if let firstError {
-        return "\n  Note: \(destination) was stored but could not be verified before this failure.\n"
+        return "\n  Note: the write to \(destination) was accepted but the value there could not be verified before this failure.\n"
             + (firstError.errorDescription ?? "The first account's state is unverified.")
     }
     return "\n  Note: \(destination) WAS stored and verified before this failure."

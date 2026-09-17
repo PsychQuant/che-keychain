@@ -19,10 +19,28 @@ final class PromptDialogTests: XCTestCase {
     func testWarningTextCombinesReplaceAndDaemonInsteadOfChoosing() {
         // Both facts must survive on the protected first line — the worst combination
         // (an existing secret destroyed AND made world-readable) must not lose one of them.
-        XCTAssertNil(PromptDialog.warningText(daemon: false, replaces: false))
-        XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: false), "daemon-readable ACL: other keychain authorization may still be required")
-        XCTAssertEqual(PromptDialog.warningText(daemon: false, replaces: true), "replaces an existing secret")
-        XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: true), "replaces an existing secret AND sets a daemon-readable ACL: other keychain authorization may still be required")
+        XCTAssertNil(PromptDialog.warningText(daemon: false, replacing: KeychainStore.Existing.none))
+        XCTAssertEqual(PromptDialog.warningText(daemon: true, replacing: KeychainStore.Existing.none),
+                       "daemon-readable ACL: other keychain authorization may still be required")
+        let replaceOnly = PromptDialog.warningText(daemon: false, replacing: .own) ?? ""
+        XCTAssertTrue(replaceOnly.contains("replaces"), replaceOnly)
+        let both = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""
+        XCTAssertTrue(both.contains("replaces") && both.contains("any application"), both)
+    }
+
+    func testWarningTextSaysWhichAccessClassIsBeingReplacedAndWhatChanges() {
+        // The dialog is the only place the user can still stop this, so it has to
+        // say what is there now and what the replacement turns it into (#7 L1).
+        let worldReadable = PromptDialog.warningText(daemon: false, replacing: .allowAll) ?? ""
+        XCTAssertTrue(worldReadable.contains("ANY application can read"), worldReadable)
+        XCTAssertTrue(worldReadable.contains("only this binary"), worldReadable)
+
+        let foreign = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"])) ?? ""
+        XCTAssertTrue(foreign.contains("other") && foreign.contains("access ends"), foreign)
+
+        // Widening is the worst case and must name both halves.
+        let widening = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""
+        XCTAssertTrue(widening.contains("only this binary can read") && widening.contains("any application"), widening)
     }
 
     func testPairWarningNamesOnlyAccountsThatWillBeReplaced() {

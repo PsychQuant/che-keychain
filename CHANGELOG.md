@@ -15,6 +15,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Nothing at a destination is deleted once the keychain has accepted the write. A name lookup finds whichever item currently carries that service and account, and an ACL says which binary may read an item rather than which write created it, so neither shows the item is this one's. A writer that deleted and recreated the destination between the add and the read-back previously had its credential deleted and an older backup written over the slot. A proven-bad value is now left in place and reported; a backup goes back only into a destination observed to hold no item, and only when the add itself failed (#7).
+
+- The noninteractive widening check reads the access settings captured in the backup and reconfirmed immediately before the delete, instead of the classification taken before the backup existed. An ACL tightened in that window no longer authorizes an allow-all rotation (#7).
+
+- Rotation eligibility asks whether an allow-all decrypt entry exists rather than whether the item classifies as allow-all. An ACL carrying one alongside named applications is already readable by everything, so rotating it widens nothing and is no longer refused (#7).
+
+- The replacement dialog names the access class at the destination and what the replacement turns it into, instead of "replaces an existing secret" for every case (#7).
+
+- Exit 4 has one meaning in the code, the help text, `README.md` and `CLAUDE.md`: a restore was accepted whose bytes or access settings do not match the backup. It is now the only outcome that can leave an unproven item behind (#7, #15).
+
+- A restore that could not be read back says which remedy fits: two matching items are not resolved by unlocking the keychain, and are no longer told to be (#15).
+
+- `set-pair` reports that the keychain accepted both writes and that the value at the named account could not be verified, instead of claiming both halves are in place — an unreadable or ambiguous read-back establishes neither (#15).
+
 - Pair consent uses a fail-closed existence snapshot for both accounts, identifies each replacement and passes both claims to save for rechecking. Input-dialog explanations are separated from fixed destination/warning text, with bounded caller text (#14).
 
 - Cleanup refused before a delete now reports a specific refusal with exit 1, not an invented deletion OSStatus or an instruction to remove an unverified item. A rejected restore may leave the destination unknown; exit-code documentation now includes that state (#15).

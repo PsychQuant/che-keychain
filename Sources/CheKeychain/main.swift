@@ -108,7 +108,7 @@ case .set(let a):
             destination: "service=\(sanitize(a.service)) account=\(sanitize(a.account))",
             explain: a.explain,
             fields: [field],
-            warning: PromptDialog.warningText(daemon: a.daemon, replaces: replaces)
+            warning: PromptDialog.warningText(daemon: a.daemon, replacing: existing)
         )
         switch result {
         case .cancel:
@@ -161,7 +161,7 @@ case .set(let a):
             // say what save() will do (refuse), not what it would do for an own item.
             die("the destination changed to an item this binary cannot replace — nothing was written. Inspect the destination before retrying.")
         }
-        let warning = PromptDialog.warningText(daemon: a.daemon, replaces: existsAtDialog == true)
+        let warning = PromptDialog.warningText(daemon: a.daemon, replacing: existing)
         let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
         guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain, warning: warning) else {
             emit("Cancelled. The clipboard was left as is.", to: true)
@@ -252,7 +252,8 @@ case .setPair(let a):
                                     + "\n  The pair is inconsistent until you re-run set-pair.")
         if first != nil || second != nil {
             let parts = [first, second].compactMap { $0?.errorDescription }
-            die(parts.joined(separator: "\n") + "\n  Both halves of the pair are in place; the one(s) above could not be verified.", exitCode: 3)
+            die(parts.joined(separator: "\n")
+                + "\n  The keychain accepted both writes; the value now at the account(s) named above could not be verified.", exitCode: 3)
         }
         emit("✓ stored \(a.service)/{\(a.visibleAccount), \(a.secureAccount)}")
     }
