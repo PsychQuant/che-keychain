@@ -23,29 +23,45 @@ Before deleting an existing item, explicit replacement MUST obtain its bytes, or
 - **THEN** set --replace SHALL return 1 without deleting or modifying it
 
 ### Requirement: Recovery with original access
-If adding the new value fails, or a proven bad new value is successfully removed, the command SHALL attempt to restore the old bytes and original access settings in the original keychain. It SHALL verify both restored bytes and normalized ACL entries before reporting a verified restore.
+If adding the new value fails, the command SHALL attempt to restore the old bytes and original access settings in the original keychain. It SHALL verify both restored bytes and normalized ACL entries before reporting a verified restore. Restoration SHALL be attempted only into a destination observed to hold no item; if any item is present, the command SHALL leave it untouched and report that the backup was not restored. After the keychain accepts the new value, the command SHALL NOT restore a backup over the destination under any outcome.
 
 #### Scenario: Failed new add
-- **WHEN** adding the new value fails after deletion and restoring succeeds
+- **WHEN** adding the new value fails after deletion, the destination holds no item, and restoring succeeds
 - **THEN** the command SHALL return nonzero and report that the original bytes and access settings were restored
+
+#### Scenario: Destination occupied at restore
+- **WHEN** adding the new value fails after deletion but an item is present at the destination
+- **THEN** the command SHALL leave that item untouched, SHALL NOT write the backup, and SHALL report that the previous value was not restored
 
 #### Scenario: Recovery mismatch
 - **WHEN** restored bytes or access settings differ from the backup
 - **THEN** the command SHALL return 4 and report the unverified restore without claiming the old reader can access it
 
 ### Requirement: Safe failure handling
-Unreadable or ambiguous post-write states SHALL remain untouched by cleanup. Refused cleanup SHALL not be described as an attempted delete. Failed recovery SHALL report the known or unknown destination state.
+Once the keychain has accepted the new value, the command SHALL NOT delete any item at the destination, whatever the read-back reports. A name lookup identifies the item currently carrying that service and account; it does not establish that the item is the one this invocation wrote, and ACL classification establishes only which binary may read an item, not which write created it. Refused cleanup SHALL name the reason and SHALL NOT be described as an attempted delete. Failed recovery SHALL report the known or unknown destination state.
 
 #### Scenario: Unverifiable new value
 - **WHEN** the new write is accepted but read-back is unreadable or ambiguous
 - **THEN** the command SHALL return 3 without deleting the destination
 
+#### Scenario: Proven bad value that cannot be attributed
+- **WHEN** the new write is accepted but read-back proves the destination empty or different
+- **THEN** the command SHALL leave the destination untouched, SHALL report that removal was not attempted because the item there cannot be proven to be this write, and SHALL NOT restore the backup
+
 ### Requirement: Noninteractive access boundary
-A stdin invocation SHALL NOT widen the ACL of an existing non-allow-all item to allow-all, even with --replace. Existing allow-all items SHALL support explicit daemon rotation when the backup is readable.
+A stdin invocation SHALL NOT widen the ACL of an existing non-allow-all item to allow-all, even with --replace. Existing allow-all items SHALL support explicit daemon rotation when the backup is readable. The decision SHALL be taken from the access settings captured in the backup and confirmed by the immediately pre-delete observation; an earlier classification SHALL NOT authorize the write on its own. An item whose decrypt ACL carries an allow-all entry SHALL be eligible for rotation even when that ACL also names applications, because such a write widens nothing.
 
 #### Scenario: Widening refused
 - **WHEN** set --replace --stdin --daemon targets a non-allow-all item
 - **THEN** the command SHALL fail before deletion
+
+#### Scenario: Access tightened after the first inspection
+- **WHEN** an item classified allow-all at inspection carries no allow-all entry in the backup or in the pre-delete observation
+- **THEN** set --replace --stdin --daemon SHALL refuse before deletion
+
+#### Scenario: Mixed allow-all and application entries
+- **WHEN** the destination's decrypt ACL carries an allow-all entry alongside named applications and a backup is readable
+- **THEN** set --replace --stdin --daemon SHALL proceed
 
 ### Requirement: Honest guarantees
 Documentation SHALL state that replacement is not atomic, requires a readable backup, and does not guarantee recovery from every operating-system failure. No credential value SHALL be printed.
