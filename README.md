@@ -121,6 +121,12 @@ A failed replacement attempts to restore the original bytes and access policy in
 
 `--replace --stdin --daemon` can rotate a backed-up allow-all item, but still refuses to widen an existing non-allow-all item's access without a dialog. `set-pair` does not support `--replace`. The flag is not a way to bypass unreadable-backup, ambiguous-match or unsupported-keychain refusals.
 
+## Moving or reinstalling the executable
+
+Ownership checks compare resolved executable paths. A symlink to the same executable is treated as the same path; a separate copy at another location is treated as foreign, even if macOS permits that copy to read the item. Matching filenames or a shared signing team do not automatically authorize replacement.
+
+After moving or reinstalling the binary, use the original copy for ordinary updates, or explicitly invoke the new copy with `set --replace`. The new copy must be able to read the old value without interaction and reproduce its access policy; otherwise it refuses before deleting the original item. Establish access through the original trusted application first if needed. Do not assume that being able to read a credential grants permission to silently replace it, and do not delete the old item just to bypass a failed backup.
+
 ## Daemon access
 
 `--daemon` sets an "allow all applications" application ACL. It does not bypass partition-ID authorization or unlock the keychain, and it does not guarantee that another executable can read the item without a prompt. Verify access using the actual consuming executable in its intended background session. A successful store verifies the writer's own read-back, not the consumer's access.

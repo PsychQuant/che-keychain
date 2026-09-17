@@ -53,6 +53,8 @@ Exit codes you should react to (`set` / `set-pair`, 0.3.0+): `0` stored and veri
 
 For an explicitly requested rotation, `set --replace` can replace a readable foreign/allow-all item after backing up its bytes and checking that its original access policy can be reproduced. A temporary nonsecret probe is created and removed before deletion. If backup or recovery validation fails, follow the exact report; do not claim that the old value/access was restored without verification. This is not an atomic operation, and the stdin ACL-widening guard still applies.
 
+When the binary moves to a different physical path, retain strict ownership checks. Use the original copy or an explicitly requested `set --replace` from the new copy after it has noninteractive read access. Do not treat a matching filename or signing team as automatic replacement permission, and do not suggest deleting an item to bypass a failed backup.
+
 ## Security boundary
 
 The caller (this agent, this MCP, this script) is **outside** the trust boundary for the typed value. che-keychain is **inside**. The OS keychain is **inside**. The user types into che-keychain's process; the value flows: dialog → SecItemAdd. Caller never on the path.

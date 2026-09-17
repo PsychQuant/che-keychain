@@ -64,6 +64,13 @@ enum AppVersion {
       non-allow-all ACL; it can rotate an existing allow-all item. set-pair
       does not accept --replace. Ambiguous/unsupported matches stay refused.
 
+      Moving this executable to a different physical path makes its old
+      items foreign to the new copy; a symlink resolves to the same path.
+      Keep using the original copy, or explicitly use the new copy with
+      --replace after establishing noninteractive read access. Failed backup
+      or policy reproduction leaves the original untouched. A matching
+      filename or signing team alone does not authorize replacement.
+
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
       reads the clipboard's text, then shows a confirmation dialog with the
       destination and a fingerprint of the value — its byte length and 8 hex
