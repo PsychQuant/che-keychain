@@ -22,6 +22,7 @@ enum Command {
     case set(SetArgs)
     case setPair(SetPairArgs)
     case has(service: String, account: String)
+    case hasNonEmpty(service: String, account: String)
     case unset(service: String, account: String?)
 }
 
@@ -154,18 +155,20 @@ enum CommandParser {
     static func parseHas(_ args: [String]) throws -> Command {
         var service: String?
         var account: String?
+        var nonEmpty = false
 
         var i = 0
         while i < args.count {
             switch args[i] {
             case "--service": service = try valueAfter(&i, args)
             case "--account": account = try valueAfter(&i, args)
+            case "--non-empty": nonEmpty = true; i += 1
             default: throw CommandError.unknownOption(args[i])
             }
         }
         guard let s = service else { throw CommandError.missingArgument("--service") }
         guard let a = account else { throw CommandError.missingArgument("--account") }
-        return .has(service: s, account: a)
+        return nonEmpty ? .hasNonEmpty(service: s, account: a) : .has(service: s, account: a)
     }
 
     // MARK: - unset

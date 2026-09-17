@@ -18,7 +18,7 @@ enum AppVersion {
       che-keychain set       --service S --account A [--daemon] (--from-clipboard | --stdin)
       che-keychain set-pair  --service S --visible-account I --secure-account S \\
                              [--visible-label LI] [--secure-label LS] [--title T] [--explain E]
-      che-keychain has       --service S --account A
+      che-keychain has       --service S --account A [--non-empty]
       che-keychain unset     --service S [--account A]
       che-keychain --version
       che-keychain --help
@@ -123,7 +123,7 @@ enum AppVersion {
       the message says which · 2
       cancelled · 3 write accepted but unverified · 4 bad item stuck (above). For
       set-pair, 3 and 4 refer to the account named in the message; the Note
-      line says what happened to the other one. `has`: 0 present, 1 absent.
+      line says what happened to the other one. plain `has`: 0 present, 1 absent.
       `unset`: 0, or 1 when some match could not be removed.
 
       Keychain errors from set, set-pair and unset (including write-verification
@@ -132,9 +132,14 @@ enum AppVersion {
       search by the numeric OSStatus, not the localized wording. OSStatus
       values are separate from the CLI exit codes above. Scripts should use
       the CLI exit code for the command's outcome, not exact stderr text.
-      `has` reports only 0 or 1 and does not print these error descriptions.
+      Plain `has` reports only 0 or 1 and does not print these error descriptions.
 
-      `has`  exits 0 if the entry exists, 1 if it does not.
+      `has` exits 0 if the entry exists, 1 if it does not.
+      `has --non-empty` checks a single own item without interaction or writes:
+        0 nonzero bytes; 1 absent; 2 present but empty; 3 check unavailable.
+      Foreign, allow-all (--daemon), ambiguous and unreadable items return 3.
+      No value is printed. Whitespace bytes count as non-empty; this does not
+      validate a token or prove that another executable can read it.
       `unset` removes an account (or all accounts under a service if --account
       omitted).
 

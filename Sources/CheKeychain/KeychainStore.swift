@@ -97,6 +97,19 @@ enum MismatchCleanup: Equatable {
     case nothingStored
 }
 
+enum NonEmptyStatus {
+    case present, missing, empty, unavailable
+
+    var exitCode: Int32 {
+        switch self {
+        case .present: return 0
+        case .missing: return 1
+        case .empty: return 2
+        case .unavailable: return 3
+        }
+    }
+}
+
 enum KeychainError: Error, LocalizedError {
     case osStatus(OSStatus, operation: String)
     case notFound
@@ -703,6 +716,18 @@ enum KeychainStore {
         if let access = access { add[kSecAttrAccess as String] = access }
         if let keychain = keychain { add[kSecUseKeychain as String] = keychain }
         return SecItemAdd(add as CFDictionary, nil)
+    }
+
+    /// Optional shape check. Never prompt, reveal the value, or widen access;
+    /// a foreign, allow-all, ambiguous or unreadable item is not "empty".
+    static func nonEmptyStatus(service: String, account: String) -> NonEmptyStatus {
+        guard let found = try? inspect(service: service, account: account) else { return .unavailable }
+        if found.existing == .none { return .missing }
+        guard found.existing == .own, let item = found.item else { return .unavailable }
+        return withoutInteraction {
+            guard let bytes = readValue(of: item) else { return .unavailable }
+            return bytes.isEmpty ? .empty : .present
+        }
     }
 
     static func has(service: String, account: String) -> Bool {

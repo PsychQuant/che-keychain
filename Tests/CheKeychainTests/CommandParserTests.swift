@@ -167,6 +167,12 @@ final class CommandParserTests: XCTestCase {
 
     // MARK: - has / unset
 
+    func testHasNonEmptySelectsTheOptInProbe() throws {
+        guard case .hasNonEmpty(let service, let account) = try CommandParser.parse("has", ["--service", "s", "--account", "a", "--non-empty"]) else { return XCTFail() }
+        XCTAssertEqual(service, "s"); XCTAssertEqual(account, "a")
+        XCTAssertThrowsError(try CommandParser.parse("has", ["--service", "s", "--non-empty"]))
+    }
+
     func testHasRequiresBoth() throws {
         let cmd = try CommandParser.parse("has", ["--service", "S", "--account", "A"])
         guard case .has(let s, let a) = cmd else { return XCTFail() }

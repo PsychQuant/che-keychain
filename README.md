@@ -66,7 +66,7 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, is empty, or could not be determined — the message says which) · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a provably bad item is stuck at the destination (`unset` it, then retry); for `set-pair`, `3`/`4` refer to the account named in the message. `has`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, is empty, or could not be determined — the message says which) · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a provably bad item is stuck at the destination (`unset` it, then retry); for `set-pair`, `3`/`4` refer to the account named in the message. `has` without `--non-empty`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
 
 Dialog labels only affect the prompt: `set --label` sets both the dialog title and the input field's label. For `set-pair`, `--visible-label` and `--secure-label` label the two input fields, while `--title` sets the dialog title. None of these options sets the stored item's label in Keychain Access.
 
@@ -74,7 +74,9 @@ Dialog labels only affect the prompt: `set --label` sets both the dialog title a
 
 Keychain errors from `set`, `set-pair`, or `unset`, including write-verification and restore failures, may include a numeric `OSStatus` followed by a description supplied by macOS. That description can vary with the system language; use the numeric OSStatus when searching for an error, rather than matching the localized wording. For example, `OSStatus -25299` identifies a duplicate-item error regardless of the description's language.
 
-The CLI exit codes listed above describe the command's outcome; they are separate from the underlying OSStatus values in diagnostics. Scripts should use the CLI exit code to determine the outcome and should not depend on the exact stderr wording. `has` reports only exit code `0` or `1` and does not print these keychain error descriptions.
+The CLI exit codes listed above describe the command's outcome; they are separate from the underlying OSStatus values in diagnostics. Scripts should use the CLI exit code to determine the outcome and should not depend on the exact stderr wording. `has` without `--non-empty` reports only exit code `0` or `1` and does not print these keychain error descriptions.
+
+`has --non-empty --service S --account A` is an optional, read-only value-shape check: exit `0` means a nonzero byte count, `1` means absent, `2` means present with zero bytes, and `3` means the check was unavailable. It checks only a single item exclusively trusted to this executable with interaction disabled; foreign, allow-all (including `--daemon`), ambiguous and unreadable items return `3`. It never reveals the value or changes the item. Whitespace bytes count as non-empty; this does not validate a token or establish another program's read permission. Plain `has` retains its original existence-only behavior.
 
 Input dialogs show caller-provided explanations in a separate, labeled area. The fixed destination and replacement warning stay together above it; long caller text is shortened to keep them visible. `set-pair` names each account that will be replaced and checks each account's observed existence state again at its write. These checks reject new-versus-existing changes; they do not make the two writes atomic or detect a value change when the item still exists.
 

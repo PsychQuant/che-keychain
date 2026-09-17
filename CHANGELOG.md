@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional `has --non-empty`: 0 nonzero bytes, 1 absent, 2 empty, 3 unavailable. It reads only a single own item with interaction disabled, reveals no value and changes nothing; plain has remains existence-only (#13).
+
 ### Fixed
 
 - Pair consent uses a fail-closed existence snapshot for both accounts, identifies each replacement and passes both claims to save for rechecking. Input-dialog explanations are separated from fixed destination/warning text, with bounded caller text (#14).

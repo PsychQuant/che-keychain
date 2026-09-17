@@ -29,6 +29,26 @@ final class KeychainStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    func testNonEmptyProbeDistinguishesMissingEmptyAndPresentWithoutWriting() throws {
+        XCTAssertEqual(KeychainStore.nonEmptyStatus(service: service, account: "missing").exitCode, 1)
+        for (account, value, expected) in [("empty", "", Int32(2)), ("value", "value", Int32(0)), ("spaces", "   ", Int32(0))] {
+            let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                kSecAttrAccount as String: account, kSecValueData as String: Data(value.utf8)]
+            XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+            XCTAssertEqual(KeychainStore.nonEmptyStatus(service: service, account: account).exitCode, expected)
+            XCTAssertTrue(KeychainStore.has(service: service, account: account), "probe must not remove an empty item")
+        }
+    }
+
+    func testNonEmptyProbeRefusesForeignAndAllowAllWithoutChangingThem() throws {
+        try seedForeignItem(account: "foreign", value: "value")
+        XCTAssertEqual(KeychainStore.nonEmptyStatus(service: service, account: "foreign").exitCode, 3)
+        XCTAssertEqual(try readForeign(account: "foreign"), "value")
+        try KeychainStore.save(service: service, account: "daemon", value: "value", daemon: true)
+        XCTAssertEqual(KeychainStore.nonEmptyStatus(service: service, account: "daemon").exitCode, 3)
+        XCTAssertEqual(try readOwn(account: "daemon"), "value")
+    }
+
     func testSaveAndHas() throws {
         try KeychainStore.save(service: service, account: "a", value: "v")
         XCTAssertTrue(KeychainStore.has(service: service, account: "a"))

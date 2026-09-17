@@ -250,6 +250,17 @@ case .has(let service, let account):
         exit(1)
     }
 
+case .hasNonEmpty(let service, let account):
+    let status = KeychainStore.nonEmptyStatus(service: service, account: account)
+    switch status {
+    case .present, .missing: break
+    case .empty:
+        emit("item exists but its value is empty: \(sanitize(service))/\(sanitize(account))", to: true)
+    case .unavailable:
+        emit("could not check a single item exclusively trusted to this binary without interaction: \(sanitize(service))/\(sanitize(account)); no value was revealed or changed.", to: true)
+    }
+    exit(status.exitCode)
+
 case .unset(let service, let account):
     let removed: [String]
     do {
