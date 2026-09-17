@@ -33,6 +33,7 @@ struct SetArgs: Equatable {
     var explain: String?
     var secure: Bool
     var daemon: Bool = false
+    var replace: Bool = false
     /// Where the value comes from (#6). `.dialog` unless --from-clipboard / --stdin.
     var source: InputSourceKind = .dialog
 }
@@ -69,6 +70,7 @@ enum CommandParser {
         var explain: String?
         var secure = false
         var daemon = false
+        var replace = false
         var fromClipboard = false
         var fromStdin = false
 
@@ -81,6 +83,7 @@ enum CommandParser {
             case "--explain": explain = try valueAfter(&i, args)
             case "--secure":  secure  = true; i += 1
             case "--daemon":  daemon  = true; i += 1
+            case "--replace": replace = true; i += 1
             case "--from-clipboard": fromClipboard = true; i += 1
             case "--stdin":          fromStdin = true; i += 1
             default: throw CommandError.unknownOption(args[i])
@@ -104,7 +107,7 @@ enum CommandParser {
                                                 ? "--secure has no input field here, and the confirmation dialog's text is fixed so a caller cannot dress it up (--label/--explain); drop them"
                                                 : "--secure, --label and --explain only apply to the dialog; drop them for --stdin")
         }
-        return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon, source: source)
+        return SetArgs(service: s, account: a, label: label, explain: explain, secure: secure, daemon: daemon, replace: replace, source: source)
     }
 
     // MARK: - set-pair

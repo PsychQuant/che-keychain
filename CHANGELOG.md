@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `set --replace` supports explicit replacement of eligible foreign/allow-all items. It requires a readable backup and nonsecret access-policy rehearsal before deletion, rebuilds fresh ACL objects for recovery, and verifies restored bytes plus policy. Plain set stays conservative; stdin still cannot widen a non-allow-all ACL (#7).
+
 - Optional `has --non-empty`: 0 nonzero bytes, 1 absent, 2 empty, 3 unavailable. It reads only a single own item with interaction disabled, reveals no value and changes nothing; plain has remains existence-only (#13).
 
 ### Fixed

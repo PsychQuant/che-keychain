@@ -45,6 +45,14 @@ final class CommandParserTests: XCTestCase {
         }
     }
 
+    func testSetReplaceIsExplicitAndDoesNotExtendSetPair() throws {
+        guard case .set(let explicit) = try CommandParser.parse("set", ["--service", "s", "--account", "a", "--replace", "--stdin"]) else { return XCTFail() }
+        XCTAssertTrue(explicit.replace)
+        guard case .set(let plain) = try CommandParser.parse("set", ["--service", "s", "--account", "a"]) else { return XCTFail() }
+        XCTAssertFalse(plain.replace)
+        XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "id", "--secure-account", "secret", "--replace"]))
+    }
+
     func testSetParsesDaemonFlag() throws {
         let cmd = try CommandParser.parse("set", ["--service", "S", "--account", "A", "--daemon"])
         guard case .set(let args) = cmd else { return XCTFail("expected .set, got \(cmd)") }

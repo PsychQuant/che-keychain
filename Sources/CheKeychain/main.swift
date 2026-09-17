@@ -21,9 +21,19 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
 /// so the caller may go on (set-pair stores its second half) and report 3 at
 /// the end. Returns that error; dies for everything else.
 @discardableResult
-func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, note: String = "") -> KeychainError? {
+func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, allowReplacement: Bool = false, note: String = "") -> KeychainError? {
     do {
-        try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting)
+        let previous = try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting, allowReplacement: allowReplacement)
+        if allowReplacement && previous != .none {
+            let evidence: String
+            switch previous {
+            case .own: evidence = "an item trusted only to this executable"
+            case .allowAll: evidence = "an allow-all item (owner not attributable)"
+            case .foreign(let owners): evidence = "a foreign item trusting: " + (owners.isEmpty ? "unattributed applications" : owners.prefix(8).joined(separator: ", "))
+            case .none, .unsupported: evidence = "the selected item"
+            }
+            emit("→ explicitly replaced \(sanitize(service))/\(sanitize(account)): \(evidence)", to: true)
+        }
         return nil
     } catch let e as KeychainError where e.exitCode == 3 {
         return e
@@ -71,7 +81,7 @@ case .set(let a):
     // Refuse before the user types anything: a foreign/ambiguous item cannot be
     // written to, so the dialog would only collect a secret to throw away.
     do {
-        try KeychainStore.preflight(service: a.service, accounts: [a.account])
+        try KeychainStore.preflight(service: a.service, accounts: [a.account], allowReplacement: a.replace)
     } catch {
         dieWith(error)
     }
@@ -142,6 +152,10 @@ case .set(let a):
             overwrite = "An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
                 + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
             existsAtDialog = true
+        case .foreign, .allowAll:
+            guard a.replace else { die("the destination changed to an item this binary cannot replace — nothing was written.") }
+            overwrite = "An item ALREADY EXISTS: --replace explicitly replaces it, including its application ACL. A readable backup is required before deletion."
+            existsAtDialog = true
         default:
             // Unreachable after a passed preflight unless the slot changed meanwhile;
             // say what save() will do (refuse), not what it would do for an own item.
@@ -174,7 +188,7 @@ case .set(let a):
     // On failure the clipboard is left alone so the user can retry — and the
     // message says so, since the success line is where the clearing is reported.
     if let unverified = storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon,
-                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog,
+                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog, allowReplacement: a.replace,
                                    note: a.source == .clipboard ? "\n  The clipboard was left as is." : "") {
         dieWith(unverified, note: a.source == .clipboard ? "\n  The clipboard was left as is." : "")
     }

@@ -186,14 +186,18 @@ final class KeychainStoreTests: XCTestCase {
         // Our own item whose decrypt ACL later gained an allow-all entry (what the
         // round-1 build did via SecItemUpdate + kSecAttrAccess union). Round 4
         // dropped such entries and judged the item .own; it must be .allowAll.
-        try KeychainStore.save(service: service, account: "mixed", value: "v1")
+        // Construct the mixed ACL directly. Mutating an existing default
+        // owner ACL through SecItemUpdate can wait for SecurityAgent input.
+        var me: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
         var access: SecAccess?
-        XCTAssertEqual(SecAccessCreate("x" as CFString, nil, &access), errSecSuccess)
-        var acls: CFArray?
-        XCTAssertEqual(SecAccessCopyACLList(access!, &acls), errSecSuccess)
-        for acl in acls as! [SecACL] { _ = SecACLSetContents(acl, nil, "x" as CFString, SecKeychainPromptSelector(rawValue: 0)) }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: "mixed"]
-        XCTAssertEqual(SecItemUpdate(q as CFDictionary, [kSecAttrAccess as String: access!] as CFDictionary), errSecSuccess)
+        XCTAssertEqual(SecAccessCreate("mixed fixture" as CFString, [me!] as CFArray, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all entry" as CFString, SecKeychainPromptSelector(rawValue: 0), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationDecrypt] as CFArray), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "mixed", kSecValueData as String: Data("v1".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "mixed"), .allowAll)
         for daemon in [false, true] {
             XCTAssertThrowsError(try KeychainStore.save(service: service, account: "mixed", value: "v2", daemon: daemon)) { err in
@@ -378,6 +382,7 @@ final class KeychainStoreTests: XCTestCase {
         KeychainStore.readBackOverride = nil
         KeychainStore.readBackReasonOverride = nil
         KeychainStore.deleteWrittenOverride = nil
+        KeychainStore.addRawStatusOverride = nil
     }
 
     func testSaveVerifiesStoredValueAndCleansUpHonestly() throws {
@@ -618,6 +623,107 @@ final class KeychainStoreTests: XCTestCase {
         let msg = KeychainError.foreignOwned(service: "my svc", account: "a'b", owners: owners, selfPath: "/me").errorDescription ?? ""
         XCTAssertTrue(msg.contains("che-keychain unset --service 'my svc' --account 'a'\\''b'"), msg)
         XCTAssertTrue(msg.contains("… and 4 more"), msg)
+    }
+
+    func testExplicitReplaceHandlesReadableForeignACLWithFreshAccess() throws {
+        var me: SecTrustedApplication?; var other: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath("/usr/bin/security", &other), errSecSuccess)
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("foreign fixture" as CFString, [me!, other!] as CFArray, &access), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "shared", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        guard case .foreign = try KeychainStore.inspectExisting(service: service, account: "shared") else { return XCTFail() }
+        try KeychainStore.save(service: service, account: "shared", value: "new", allowReplacement: true)
+        XCTAssertEqual(try readOwn(account: "shared"), "new")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "shared"), .own)
+    }
+
+    func testExplicitReplaceRejectsUnrepresentableOwnerACLBeforeDeletion() throws {
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "d", kSecReturnRef as String: true]
+        var out: CFTypeRef?; XCTAssertEqual(SecItemCopyMatching(q as CFDictionary, &out), errSecSuccess)
+        let item = out as! SecKeychainItem
+        var access: SecAccess?; XCTAssertEqual(SecKeychainItemCopyAccess(item, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "additional control" as CFString, SecKeychainPromptSelector(rawValue: 0), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationChangeACL] as CFArray), errSecSuccess)
+        XCTAssertEqual(SecKeychainItemSetAccess(item, access!), errSecSuccess)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("no deletion was attempted"), error.localizedDescription)
+        }
+        XCTAssertEqual(try readOwn(account: "d"), "old")
+    }
+
+    func testExplicitReplaceRotatesAllowAllWithoutWideningFromStdin() throws {
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, mayWidenExistingACL: false, allowReplacement: true)
+        XCTAssertEqual(try readOwn(account: "d"), "new")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+    }
+
+    func testExplicitReplaceRequiresReadableBackupBeforeDeletingForeignItem() throws {
+        try seedForeignItem(account: "foreign", value: "old")
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "foreign", value: "new", allowReplacement: true)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("backup"), error.localizedDescription)
+        }
+        XCTAssertEqual(try readForeign(account: "foreign"), "old")
+    }
+
+    func testExplicitReplaceRestoresOriginalBytesAndAllowAllAccessAfterBadReadBack() throws {
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        defer { resetSeams() }
+        KeychainStore.readBackOverride = { _, _ in Data("bad".utf8) }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("original bytes and access settings were restored and verified"), error.localizedDescription)
+        }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "d"), "old")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+    }
+
+    func testExplicitReplaceRestoresOriginalAfterNewAddFails() throws {
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        defer { resetSeams() }
+        KeychainStore.addRawStatusOverride = { _, _, data in data == Data("new".utf8) ? errSecNotAvailable : nil }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("restored and verified"), error.localizedDescription)
+        }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "d"), "old")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+    }
+
+    func testExplicitReplaceDoesNotClaimRecoveryWhenRestoringAlsoFails() throws {
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        defer { resetSeams() }
+        KeychainStore.addRawStatusOverride = { _, _, _ in errSecNotAvailable }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("could NOT be restored"), error.localizedDescription)
+            XCTAssertFalse(error.localizedDescription.contains("restored and verified"), error.localizedDescription)
+        }
+        XCTAssertFalse(KeychainStore.has(service: service, account: "d"))
+    }
+
+    func testExplicitReplaceLeavesUnverifiableNewItemUntouched() throws {
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        defer { resetSeams() }
+        KeychainStore.readBackReasonOverride = { _, _ in .unreadable }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
+            XCTAssertEqual((error as? KeychainError)?.exitCode, 3)
+        }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "d"), "new")
+    }
+
+    func testExplicitReplaceDoesNotBypassStdinWideningGuard() throws {
+        try KeychainStore.save(service: service, account: "own", value: "old")
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "new", daemon: true, mayWidenExistingACL: false, allowReplacement: true)) { error in
+            guard case KeychainError.aclWideningRefused = error else { return XCTFail("unexpected error: \(error)") }
+        }
+        XCTAssertEqual(try readOwn(account: "own"), "old")
     }
 
     func testSaveDaemonRoundTrips() throws {

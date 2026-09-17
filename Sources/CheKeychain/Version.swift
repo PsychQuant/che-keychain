@@ -14,8 +14,8 @@ enum AppVersion {
       caller itself. See "Value sources" below.
 
     USAGE
-      che-keychain set       --service S --account A [--label L] [--explain E] [--secure] [--daemon]
-      che-keychain set       --service S --account A [--daemon] (--from-clipboard | --stdin)
+      che-keychain set       --service S --account A [--label L] [--explain E] [--secure] [--daemon] [--replace]
+      che-keychain set       --service S --account A [--daemon] [--replace] (--from-clipboard | --stdin)
       che-keychain set-pair  --service S --visible-account I --secure-account S \\
                              [--visible-label LI] [--secure-label LS] [--title T] [--explain E]
       che-keychain has       --service S --account A [--non-empty]
@@ -35,7 +35,7 @@ enum AppVersion {
       are not atomic: the first may be stored even if the second fails.
       Each write still uses read-back verification and the exit codes below.
 
-      `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
+      Plain `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
       binary and nothing else, the item is deleted by reference and re-created
       with the new value and the requested ACL (the old value is re-stored if
       that fails). Anything else is REFUSED before the dialog opens, with the
@@ -51,6 +51,18 @@ enum AppVersion {
       a write can still fail afterwards for other reasons (locked keychain…). `unset` deletes by reference, so it
       also removes items created by other programs, prints what it removed, and
       reports every item it could not remove.
+
+      `set --replace` deliberately replaces an eligible foreign or allow-all
+      item. It requires a noninteractive backup of the old bytes and access
+      settings. A temporary nonsecret probe must confirm that the original
+      policy can be recreated and be removed before the original is deleted.
+      Unreadable or unreproducible backups are refused. Failed replacement
+      attempts to restore and verify the old bytes and policy; the report
+      distinguishes restored, unverified and failed recovery. This is not
+      atomic and does not preserve label/comment/date metadata. No value is
+      printed. --replace --stdin --daemon still cannot widen an existing
+      non-allow-all ACL; it can rotate an existing allow-all item. set-pair
+      does not accept --replace. Ambiguous/unsupported matches stay refused.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
       reads the clipboard's text, then shows a confirmation dialog with the
@@ -93,7 +105,7 @@ enum AppVersion {
            Inspect ambiguous matches in Keychain Access; unlocking is not a remedy
            for multiple matches. The report says whether a previous item was deleted.
         4  a provably bad item is stuck at the destination (its removal was
-           attempted but failed, or the restored previous value reads back wrong): run the
+           attempted but failed, or restored bytes/access settings do not match): run the
            `che-keychain unset` command the report gives, then store again
 
       `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
@@ -165,9 +177,7 @@ enum AppVersion {
       # the token on the clipboard — prefer --from-clipboard, or clear it after.
       pbpaste | che-keychain set --service ntu-cool-canvas --account default --stdin
 
-      # Rotate a daemon-readable secret (0.3.0+: an existing allow-all item is
-      # never overwritten in place — remove it explicitly first)
-      che-keychain unset --service bus-eta-logger --account tdx_secret
-      che-keychain set   --service bus-eta-logger --account tdx_secret --secure --daemon
+      # Explicit daemon rotation (requires a readable, restorable backup)
+      che-keychain set --service bus-eta-logger --account tdx_secret --replace --secure --daemon
     """
 }
