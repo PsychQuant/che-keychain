@@ -102,6 +102,10 @@ enum AppVersion {
       destination (service + account) so the user can verify a malicious
       caller isn't redirecting writes. Secure fields use NSSecureTextField
       (masked).
+      Caller-provided explanations are shown separately from the fixed
+      destination and warnings; long caller text is shortened. set-pair names
+      the accounts being replaced and rechecks each account's observed
+      existence state before its write. This is not a two-account transaction.
       Storage: login.keychain-db (local, NOT iCloud-synced).
 
       `--daemon` sets an "allow all applications" ACL. This alone does not

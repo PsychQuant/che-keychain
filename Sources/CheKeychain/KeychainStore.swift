@@ -384,10 +384,15 @@ enum KeychainStore {
     /// (foreign / unattributable / ambiguous), without writing anything.
     /// `set` and `set-pair` run it for every account before the dialog, so a
     /// refusal is never raised after a secret was typed or partially stored.
-    static func preflight(service: String, accounts: [String]) throws {
+    @discardableResult
+    static func preflight(service: String, accounts: [String]) throws -> [String: Bool] {
+        var states: [String: Bool] = [:]
         for account in accounts {
-            try refusal(for: try inspect(service: service, account: account).existing, service: service, account: account)
+            let existing = try inspect(service: service, account: account).existing
+            try refusal(for: existing, service: service, account: account)
+            states[account] = existing != .none
         }
+        return states
     }
 
     /// The single place that decides which existing items `save` refuses. The

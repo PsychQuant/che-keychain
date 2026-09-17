@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pair consent uses a fail-closed existence snapshot for both accounts, identifies each replacement and passes both claims to save for rechecking. Input-dialog explanations are separated from fixed destination/warning text, with bounded caller text (#14).
+
 - Cleanup refused before a delete now reports a specific refusal with exit 1, not an invented deletion OSStatus or an instruction to remove an unverified item. A rejected restore may leave the destination unknown; exit-code documentation now includes that state (#15).
 - Ambiguous read-back directs the user to inspect the matching items; a pair's second-store failure retains the first store's full diagnostic. stdin registers its best-effort buffer wipe before reading, drops long-lived Data slices, and removes the unused EOF flag (#15).
 - A clipboard destination that becomes unwritable before confirmation is refused without a contradictory replacement warning. Both set dialog sources check their stated existence claim at write time; pair parity is tracked in #14 (#15).

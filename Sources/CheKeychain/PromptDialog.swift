@@ -45,30 +45,38 @@ enum PromptDialog {
         // fields silently fail to paste (issue #1). Install a standard Edit menu.
         installEditMenuIfNeeded(app)
 
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = buildInformativeText(destination: destination, explain: explain, warning: warning)
-        alert.addButton(withTitle: "Store")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
-
-        let inputs = buildAccessoryView(for: fields)
-        alert.accessoryView = inputs.container
-        // Focus the first field so the user can start typing immediately.
-        if let first = inputs.fieldViews.first {
-            alert.window.initialFirstResponder = first
-        }
-
+        let built = makeInputAlert(title: title, destination: destination, explain: explain, fields: fields, warning: warning)
+        let alert = built.alert
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else {
             return .cancel
         }
 
         var values: [String: String] = [:]
-        for (field, view) in zip(fields, inputs.fieldViews) {
+        for (field, view) in zip(fields, built.fieldViews) {
             values[field.name] = view.stringValue
         }
         return .accept(values: values)
+    }
+
+    static func pairWarningText(replacing accounts: [String]) -> String? {
+        guard !accounts.isEmpty else { return nil }
+        return "replaces existing secrets for accounts: " + accounts.map(sanitize).joined(separator: ", ")
+    }
+
+    /// Build the input alert without presenting it. Trusted destination text
+    /// remains in informativeText; caller explanation lives in the accessory.
+    static func makeInputAlert(title: String, destination: String, explain: String?, fields: [PromptField], warning: String? = nil) -> (alert: NSAlert, fieldViews: [NSTextField]) {
+        let alert = NSAlert()
+        alert.messageText = sanitize(title)
+        alert.informativeText = buildInformativeText(destination: destination, explain: nil, warning: warning)
+        alert.addButton(withTitle: "Store")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        let inputs = buildAccessoryView(for: fields, explain: explain)
+        alert.accessoryView = inputs.container
+        alert.window.initialFirstResponder = inputs.fieldViews.first
+        return (alert, inputs.fieldViews)
     }
 
     /// Confirmation-only alert (no input field) for `--from-clipboard` (#6): the
@@ -138,12 +146,26 @@ enum PromptDialog {
         app.mainMenu = makeMainMenuWithEditMenu()
     }
 
-    private static func buildAccessoryView(for fields: [PromptField]) -> (container: NSView, fieldViews: [NSTextField]) {
+    private static func buildAccessoryView(for fields: [PromptField], explain: String?) -> (container: NSView, fieldViews: [NSTextField]) {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
+
+        if let explain, !explain.isEmpty {
+            let heading = NSTextField(labelWithString: "Caller-provided explanation")
+            heading.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+            stack.addArrangedSubview(heading)
+            let shown = String(explain.prefix(512)) + (explain.count > 512 ? "…" : "")
+            let text = NSTextField(wrappingLabelWithString: shown)
+            text.preferredMaxLayoutWidth = 360
+            text.maximumNumberOfLines = 6
+            text.lineBreakMode = .byTruncatingTail
+            text.setAccessibilityLabel("Caller-provided explanation")
+            text.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            stack.addArrangedSubview(text)
+        }
 
         var fieldViews: [NSTextField] = []
         for field in fields {
@@ -152,8 +174,10 @@ enum PromptDialog {
             row.alignment = .leading
             row.spacing = 2
 
-            let label = NSTextField(labelWithString: field.label)
+            let label = NSTextField(labelWithString: sanitize(field.label))
             label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.lineBreakMode = .byTruncatingTail
+            label.widthAnchor.constraint(equalToConstant: 360).isActive = true
 
             let input: NSTextField = field.isSecure ? NSSecureTextField() : NSTextField()
             input.frame = NSRect(x: 0, y: 0, width: 360, height: 22)
@@ -169,7 +193,7 @@ enum PromptDialog {
         }
 
         // Wrap in a container view so NSAlert sizes the accessory correctly.
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: CGFloat(fields.count) * 56))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: max(CGFloat(fields.count) * 56, stack.fittingSize.height)))
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),

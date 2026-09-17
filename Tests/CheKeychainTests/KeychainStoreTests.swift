@@ -253,6 +253,18 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
     }
 
+    func testPreflightReturnsEachAccountsExistenceWithoutShortCircuiting() throws {
+        for first in [false, true] {
+            for second in [false, true] {
+                try KeychainStore.unset(service: service)
+                if first { try KeychainStore.save(service: service, account: "id", value: "first") }
+                if second { try KeychainStore.save(service: service, account: "secret", value: "second") }
+                let states = try KeychainStore.preflight(service: service, accounts: ["id", "secret"])
+                XCTAssertEqual(states, ["id": first, "secret": second])
+            }
+        }
+    }
+
     func testPreflightRefusesBeforeAnythingIsWritten() throws {
         // set-pair must refuse up front, not after the first account has landed.
         try seedForeignItem(account: "pass", value: "stale")

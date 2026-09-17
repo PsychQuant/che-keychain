@@ -76,6 +76,8 @@ Keychain errors from `set`, `set-pair`, or `unset`, including write-verification
 
 The CLI exit codes listed above describe the command's outcome; they are separate from the underlying OSStatus values in diagnostics. Scripts should use the CLI exit code to determine the outcome and should not depend on the exact stderr wording. `has` reports only exit code `0` or `1` and does not print these keychain error descriptions.
 
+Input dialogs show caller-provided explanations in a separate, labeled area. The fixed destination and replacement warning stay together above it; long caller text is shortened to keep them visible. `set-pair` names each account that will be replaced and checks each account's observed existence state again at its write. These checks reject new-versus-existing changes; they do not make the two writes atomic or detect a value change when the item still exists.
+
 Exit `1` also covers cleanup that was not attempted because the destination could not be identified safely. That is not a failed delete: no deletion OSStatus is invented, and the report asks you to inspect the destination rather than blindly remove it. Ambiguous matches require inspection in Keychain Access; unlocking alone does not resolve them. On a pair failure, the report retains the first account's complete diagnosis.
 
 ## Security model

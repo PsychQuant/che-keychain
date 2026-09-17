@@ -194,10 +194,14 @@ case .setPair(let a):
     // Both accounts are checked before the dialog so a *refusal* on the second
     // cannot follow a write of the first. A non-refusal failure on the second
     // write is still possible; it is reported together with what was written.
+    let pairStates: [String: Bool]
     do {
-        try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount])
+        pairStates = try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount])
     } catch {
         dieWith(error)
+    }
+    guard let visibleExists = pairStates[a.visibleAccount], let secureExists = pairStates[a.secureAccount] else {
+        die("could not determine both destinations — nothing was written.")
     }
     let visibleLabel = a.visibleLabel ?? a.visibleAccount
     let secureLabel  = a.secureLabel  ?? a.secureAccount
@@ -206,14 +210,13 @@ case .setPair(let a):
         PromptField(name: a.visibleAccount, label: visibleLabel, isSecure: false),
         PromptField(name: a.secureAccount,  label: secureLabel,  isSecure: true)
     ]
-    let pairReplaces = (try? KeychainStore.inspectExisting(service: a.service, account: a.visibleAccount)).map { if case .none = $0 { return false } else { return true } } ?? true
-        || (try? KeychainStore.inspectExisting(service: a.service, account: a.secureAccount)).map { if case .none = $0 { return false } else { return true } } ?? true
+    let replacingAccounts = [a.visibleAccount, a.secureAccount].filter { pairStates[$0] == true }
     let result = PromptDialog.run(
         title: title,
         destination: "service=\(sanitize(a.service))  accounts={\(sanitize(a.visibleAccount)), \(sanitize(a.secureAccount))}",
         explain: a.explain,
         fields: fields,
-        warning: PromptDialog.warningText(daemon: false, replaces: pairReplaces)
+        warning: PromptDialog.pairWarningText(replacing: replacingAccounts)
     )
     switch result {
     case .cancel:
@@ -228,9 +231,9 @@ case .setPair(let a):
         }
         // A "stored, unverified" first half (exit 3) is in the slot, so the second
         // half is still stored; both outcomes are reported at the end with exit 3.
-        let first = storeOrDie(service: a.service, account: a.visibleAccount, value: v,
+        let first = storeOrDie(service: a.service, account: a.visibleAccount, value: v, expectingExisting: visibleExists,
                                note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.secureAccount)) was NOT stored (set-pair stops at a failure that leaves nothing usable); the pair is incomplete until you re-run set-pair.")
-        let second = storeOrDie(service: a.service, account: a.secureAccount, value: s,
+        let second = storeOrDie(service: a.service, account: a.secureAccount, value: s, expectingExisting: secureExists,
                                 note: pairFirstStoreNote(service: a.service, account: a.visibleAccount, firstError: first)
                                     + "\n  The pair is inconsistent until you re-run set-pair.")
         if first != nil || second != nil {

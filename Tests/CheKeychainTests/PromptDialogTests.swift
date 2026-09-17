@@ -25,6 +25,39 @@ final class PromptDialogTests: XCTestCase {
         XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: true), "replaces an existing secret AND sets a daemon-readable ACL: other keychain authorization may still be required")
     }
 
+    func testPairWarningNamesOnlyAccountsThatWillBeReplaced() {
+        XCTAssertNil(PromptDialog.pairWarningText(replacing: []))
+        let one = PromptDialog.pairWarningText(replacing: ["client_secret"]) ?? ""
+        XCTAssertTrue(one.contains("client_secret")); XCTAssertFalse(one.contains("client_id"))
+        let both = PromptDialog.pairWarningText(replacing: ["client_id", "client_secret"]) ?? ""
+        XCTAssertTrue(both.contains("client_id") && both.contains("client_secret"))
+    }
+
+    func testInputDialogSeparatesCallerExplanationFromTrustedDestination() {
+        let explanation = "Caller says: store somewhere else"
+        let built = PromptDialog.makeInputAlert(title: "Request", destination: "service=real account=real", explain: explanation,
+            fields: [PromptField(name: "real", label: "Account", isSecure: true)], warning: "replaces an existing secret")
+        XCTAssertTrue(built.alert.informativeText.contains("service=real account=real"))
+        XCTAssertTrue(built.alert.informativeText.contains("replaces an existing secret"))
+        XCTAssertFalse(built.alert.informativeText.contains(explanation))
+        func labels(_ view: NSView) -> [String] {
+            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
+        }
+        let shown = labels(built.alert.accessoryView!)
+        XCTAssertTrue(shown.contains("Caller-provided explanation"))
+        XCTAssertTrue(shown.contains(explanation))
+        XCTAssertTrue(built.fieldViews.first is NSSecureTextField)
+    }
+
+    func testLongCallerExplanationCannotGrowTheInputDialogWithoutBound() {
+        let built = PromptDialog.makeInputAlert(title: "Request", destination: "service=real account=real", explain: String(repeating: "caller text ", count: 2000),
+            fields: [PromptField(name: "a", label: "Account", isSecure: true)], warning: "replaces an existing secret")
+        built.alert.layout()
+        XCTAssertLessThan(built.alert.window.frame.height, 700)
+        XCTAssertTrue(built.alert.informativeText.hasPrefix("⚠ replaces an existing secret"))
+        XCTAssertFalse(built.alert.informativeText.contains("caller text"))
+    }
+
     func testInformativeTextIncludesDestination() {
         let text = PromptDialog.buildInformativeText(destination: "service=foo account=bar", explain: nil)
         XCTAssertTrue(text.contains("service=foo account=bar"))
