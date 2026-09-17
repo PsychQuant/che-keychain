@@ -81,16 +81,19 @@ enum AppVersion {
       both. Dialog values are stored as typed; an empty or whitespace-only
       value is refused everywhere, set-pair included.
       Every store (set, all sources, and set-pair) is read back and compared,
-      and the exit code answers one question — did the new value land?
-        1  no: an empty or different value was removed again; on a rotation
+      and the exit code reports the observed outcome:
+        1  an error: an empty or different value was removed again; on a rotation
            the previous value was re-stored and read back, or the report says
            exactly what state the slot is in (empty, or previous value
-           unverified)
-        3  it is in the slot but could not be verified (keychain locked, or
-           the match was ambiguous); the report says whether it replaced a
-           previous value
+           unverified). The state may also be unknown: cleanup may be refused
+           before any deletion is attempted, or restoring the old value may fail.
+           If cleanup was not attempted, inspect the destination before deleting it.
+        3  the write was accepted but could not be verified (keychain locked, or
+           the match was ambiguous); cleanup leaves the destination alone.
+           Inspect ambiguous matches in Keychain Access; unlocking is not a remedy
+           for multiple matches. The report says whether a previous item was deleted.
         4  a provably bad item is stuck at the destination (its removal was
-           refused, or the restored previous value reads back wrong): run the
+           attempted but failed, or the restored previous value reads back wrong): run the
            `che-keychain unset` command the report gives, then store again
 
       `set` (dialog and --from-clipboard) / `set-pair` pop a native NSAlert;
@@ -112,8 +115,9 @@ enum AppVersion {
 
       Exit codes (set, set-pair): 0 stored and verified · 1 any other error,
       including "the new value did not land" — the slot is unchanged, holds
-      the restored previous value, or is empty; the message says which · 2
-      cancelled · 3 stored but unverified · 4 bad item stuck (above). For
+      the restored previous value, is empty, or has an unknown state;
+      the message says which · 2
+      cancelled · 3 write accepted but unverified · 4 bad item stuck (above). For
       set-pair, 3 and 4 refer to the account named in the message; the Note
       line says what happened to the other one. `has`: 0 present, 1 absent.
       `unset`: 0, or 1 when some match could not be removed.

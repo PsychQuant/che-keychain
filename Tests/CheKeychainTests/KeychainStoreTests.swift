@@ -289,7 +289,10 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(SecItemCopyMatching(q as CFDictionary, &out), errSecSuccess)
         let ref = out as! SecKeychainItem
         let outcome = KeychainStore.deleteWritten(ref, service: service, account: "swapped", daemon: false)
-        guard case .removalFailed(errSecInvalidOwnerEdit, previousReplaced: false) = outcome else { return XCTFail("got \(outcome)") }
+        XCTAssertEqual(outcome.exitCode, 1, "not attempting a delete is not proof of a stuck bad item")
+        let report = KeychainError.storedValueMismatch(service: service, account: "swapped", reason: .differs, cleanup: outcome).errorDescription ?? ""
+        XCTAssertFalse(report.contains("OSStatus -25244"), report)
+        XCTAssertFalse(report.contains("che-keychain unset"), report)
         XCTAssertTrue(KeychainStore.has(service: service, account: "swapped"), "the foreign item is untouched")
         // Our own item is still removable through the same path.
         try KeychainStore.save(service: service, account: "ours", value: "v")
@@ -299,6 +302,21 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(SecItemCopyMatching(q2 as CFDictionary, &out2), errSecSuccess)
         XCTAssertEqual(KeychainStore.deleteWritten(out2 as! SecKeychainItem, service: service, account: "ours", daemon: false), .removed)
         XCTAssertFalse(KeychainStore.has(service: service, account: "ours"))
+    }
+
+    func testAmbiguousReadBackDoesNotSuggestUnlockingTheKeychain() {
+        let error = KeychainError.storedValueMismatch(service: "s", account: "a", reason: .ambiguous, cleanup: .leftInPlace(previousReplaced: false))
+        let message = error.errorDescription ?? ""
+        XCTAssertFalse(message.lowercased().contains("unlock"), message)
+        XCTAssertTrue(message.contains("Keychain Access"), message)
+    }
+
+    func testCleanupWithoutAReferenceDoesNotTellTheUserToDeleteAnything() {
+        let outcome = KeychainStore.deleteWritten(nil, service: service, account: "missing", daemon: false)
+        XCTAssertEqual(outcome.exitCode, 1)
+        let message = KeychainError.storedValueMismatch(service: service, account: "missing", reason: .differs, cleanup: outcome).errorDescription ?? ""
+        XCTAssertFalse(message.contains("che-keychain unset"), message)
+        XCTAssertFalse(message.contains("OSStatus"), message)
     }
 
     func testRemovedPreviousLostDoesNotClaimAnEmptySlotWhenTheReaddWasRefused() {
@@ -479,7 +497,7 @@ final class KeychainStoreTests: XCTestCase {
         let unverified = msg(.restoredUnverified)
         XCTAssertTrue(unverified.contains("could not be read back to prove it") && !unverified.contains("now absent"), unverified)
         let lost = msg(.lost(.readdFailed(-25293)))
-        XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("now absent") && lost.contains("-25293"), lost)
+        XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("state is unknown") && !lost.contains("now absent") && lost.contains("-25293"), lost)
         let wrong = msg(.mismatch(.differs))
         XCTAssertTrue(wrong.contains("reads back differs") && wrong.contains("unset"), wrong)
     }

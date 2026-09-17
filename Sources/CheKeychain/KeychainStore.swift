@@ -50,15 +50,22 @@ enum RestoreOutcome: Equatable {
     var exitCode: Int32 { cleanup.exitCode }
 }
 
+enum CleanupRefusal: String {
+    case noReference = "the read-back did not identify an item to remove"
+    case inspectionFailed = "the destination could not be inspected"
+    case referenceChanged = "the destination no longer identifies the same item"
+    case notOwned = "the item is not exclusively trusted to this binary"
+}
+
 enum MismatchCleanup: Equatable {
-    /// Exit code for the CLI, decided by ONE question — did the new value land?
-    ///   1: no; the slot is empty, or holds the previous value (verified or not).
-    ///   3: the new value is in the slot but could not be verified (locked keychain / ambiguous).
+    /// Exit code for the CLI, based on observed results.
+    ///   1: error; unchanged, empty, restored, or unknown destination state.
+    ///   3: write accepted but not verified (locked keychain / ambiguous).
     ///   4: a provably bad item is stuck at the destination (removal refused, or the
     ///      restored previous value reads back wrong) — `unset` before retrying.
     var exitCode: Int32 {
         switch self {
-        case .removed, .restoredPrevious, .restoredUnverified, .removedPreviousLost, .nothingStored: return 1
+        case .removed, .restoredPrevious, .restoredUnverified, .removedPreviousLost, .nothingStored, .removalNotAttempted: return 1
         case .leftInPlace: return 3
         case .removalFailed, .restoreMismatch: return 4
         }
@@ -71,7 +78,7 @@ enum MismatchCleanup: Equatable {
     /// (locked keychain / ambiguous) — almost certainly intact, not proven.
     case restoredUnverified
     /// Rotation: the new value is not in the slot and the previous value could NOT be put back
-    /// (`RestoreLoss` says why). The slot is empty.
+    /// (`RestoreLoss` says why). A failed re-add leaves the state unknown.
     case removedPreviousLost(RestoreLoss)
     /// Rotation: the previous value was re-added (the keychain accepted it) but reads back
     /// wrong (`reason`: missing / empty / differs) — the slot holds something unverified.
@@ -83,6 +90,9 @@ enum MismatchCleanup: Equatable {
     /// Deletion was attempted and refused (OSStatus); the unverified item remains.
     /// `previousReplaced` = rotation: the previous value is gone too.
     case removalFailed(OSStatus, previousReplaced: Bool)
+    /// The safety check refused cleanup before any delete API was called.
+    /// This is an unknown destination state, not an OSStatus deletion failure.
+    case removalNotAttempted(CleanupRefusal, previousReplaced: Bool)
     /// Nothing to clean up: the write reported success but no item exists.
     case nothingStored
 }
@@ -270,9 +280,16 @@ enum KeychainError: Error, LocalizedError {
             case .restoreMismatch(let why):
                 done = "The new value is not in the slot; the previous value was re-added (the keychain accepted it) but reads back \(why.rawValue) — the slot holds an UNVERIFIED item. Remove it (`che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))`) and store the secret again."
             case .leftInPlace(let replaced):
-                done = replaced
-                    ? "The new item was left in place but is UNVERIFIED; the previous value is GONE (it was deleted for the replace and nothing was put back — the slot is occupied). Unlock the keychain and store the secret again to be sure."
-                    : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. Unlock the keychain and retry the store (a rotation of an own item is allowed)."
+                let remedy = reason == .ambiguous
+                    ? "Inspect the matching items in Keychain Access and resolve the ambiguity before retrying; no item was selected for removal."
+                    : "Check the keychain's lock state and the consuming program's access before retrying."
+                done = (replaced
+                    ? "The new item was left in place but is UNVERIFIED; the previous value is GONE (it was deleted for the replace and nothing was put back). "
+                    : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. ") + remedy
+            case .removalNotAttempted(let why, let replaced):
+                done = "No removal was attempted: \(why.rawValue). The destination's current state is unknown. "
+                    + (replaced ? "The previous item was deleted for the replace and has not been restored. " : "")
+                    + "Inspect the destination in Keychain Access before taking further action."
             case .removalFailed(let st, let replaced):
                 done = "Removing the just-written item FAILED (\(status(st))) — an unverified item remains\(replaced ? ", and it has REPLACED the previous value, which is gone" : ""): che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct)), then store the secret again"
             case .nothingStored:
@@ -300,7 +317,11 @@ enum KeychainError: Error, LocalizedError {
                 case .readdFailed(let rs): why = "re-add failed: OSStatus \(rs)"
                 case .readdVanished:      why = "the keychain accepted the re-add, yet no item exists afterwards"
                 }
-                outcome = "The previous item could NOT be restored (\(why)) — \(sanitize(svc))/\(sanitize(acct)) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
+                if case .readdFailed = loss {
+                    outcome = "The previous item could NOT be restored (\(why)); the destination's state is unknown. Inspect it before retrying."
+                } else {
+                    outcome = "The previous item could NOT be restored (\(why)) — \(sanitize(svc))/\(sanitize(acct)) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
+                }
             }
             return """
             replacing \(sanitize(svc))/\(sanitize(acct)) failed: the old item was deleted but adding the new one failed \
@@ -562,11 +583,15 @@ enum KeychainStore {
         #if DEBUG
         if let forced = deleteWrittenOverride { return forced }
         #endif
-        guard let item = item else { return .removalFailed(errSecItemNotFound, previousReplaced: false) }
-        guard let found = try? inspect(service: service, account: account),
-              let current = found.item, CFEqual(current, item),
-              (found.existing == .own || (daemon && found.existing == .allowAll)) else {
-            return .removalFailed(errSecInvalidOwnerEdit, previousReplaced: false)
+        guard let item = item else { return .removalNotAttempted(.noReference, previousReplaced: false) }
+        guard let found = try? inspect(service: service, account: account) else {
+            return .removalNotAttempted(.inspectionFailed, previousReplaced: false)
+        }
+        guard let current = found.item, CFEqual(current, item) else {
+            return .removalNotAttempted(.referenceChanged, previousReplaced: false)
+        }
+        guard found.existing == .own || (daemon && found.existing == .allowAll) else {
+            return .removalNotAttempted(.notOwned, previousReplaced: false)
         }
         return withoutInteraction {
             let st = SecKeychainItemDelete(item)
@@ -622,6 +647,8 @@ enum KeychainStore {
                     cleanup = restorePrevious(old, service: service, account: account, keychain: keychain).cleanup
                 } else if case .removalFailed(let st, _) = del {
                     cleanup = .removalFailed(st, previousReplaced: true)
+                } else if case .removalNotAttempted(let refusal, _) = del {
+                    cleanup = .removalNotAttempted(refusal, previousReplaced: true)
                 } else {
                     cleanup = del
                 }

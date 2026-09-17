@@ -40,7 +40,7 @@ che-keychain has --service <svc> --account <acct>
 che-keychain unset --service <svc> [--account <acct>]
 ```
 
-Exit codes you should react to (`set` / `set-pair`, 0.3.0+): `0` stored and verified · `1` any other error, including "the new value did not land" (see stderr — it says whether the slot is unchanged, holds the restored previous value, or is empty) · `2` user cancelled · `3` stored but could not be verified (the item is left in place; keychain locked or ambiguous match) · `4` a provably bad item is stuck at the destination — run the `unset` the message gives, then retry. `has`: `0` present, `1` absent.
+Exit codes you should react to (`set` / `set-pair`, 0.3.0+): `0` stored and verified · `1` any other error, including "the new value did not land" (see stderr — it says whether the slot is unchanged, holds the restored previous value, is empty, or has an unknown state) · `2` user cancelled · `3` write accepted but could not be verified (cleanup leaves the destination alone; keychain locked or ambiguous match) · `4` a provably bad item is stuck at the destination — run the `unset` the message gives, then retry. `has`: `0` present, `1` absent.
 
 ## Discipline
 

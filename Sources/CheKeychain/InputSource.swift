@@ -165,15 +165,17 @@ enum InputSource {
             return (pfd.revents & Int16(POLLIN | POLLHUP)) != 0
         }
         var buffer = Data()
+        // Register before any read can fail. String/Data temporaries remain
+        // ordinary memory; this only attempts to wipe this buffer's storage.
+        defer { buffer.resetBytes(in: 0..<buffer.count) }
         var scanned = 0            // bytes already scanned (incremental, O(n))
         var lineStart = 0          // start of the current line
         var contentSeen = false    // the current line has a non-blank byte
         var breakAt: Int? = nil
-        var sawEOF = false
         while breakAt == nil {
             guard try waitReadable(stdinDeadlineSeconds * 1000) else { throw InputSourceError.stdinTimeout(seconds: Int(stdinDeadlineSeconds)) }
             let chunk = handle.availableData
-            if chunk.isEmpty { sawEOF = true; break }                // EOF
+            if chunk.isEmpty { break }                // EOF
             buffer.append(chunk)
             var i = scanned
             while i < buffer.count {
@@ -208,14 +210,12 @@ enum InputSource {
                 if more.contains(where: { !isBlank($0) }) { break }          // enough to refuse
             }
         }
-        // Best-effort: the buffer held the secret; wipe it once the String copy exists.
-        defer { buffer.resetBytes(in: 0..<buffer.count) }
         guard contentSeen else { throw InputSourceError.emptyStdin }
         let lineEnd = breakAt ?? buffer.count
-        let line = buffer[lineStart..<lineEnd]
-        let rest = buffer[lineEnd...]
-        guard !rest.contains(where: { !isBlank($0) }) else { throw InputSourceError.stdinMultiline }
-        guard let decoded = String(bytes: line, encoding: .utf8) else { throw InputSourceError.stdinNotUTF8 }
+        // Keep slices inside these expressions so no slice outlives the read
+        // and forces the deferred buffer wipe to copy aliased storage.
+        guard !buffer[lineEnd...].contains(where: { !isBlank($0) }) else { throw InputSourceError.stdinMultiline }
+        guard let decoded = String(bytes: buffer[lineStart..<lineEnd], encoding: .utf8) else { throw InputSourceError.stdinNotUTF8 }
         guard let value = try normalizeLine(decoded, source: "stdin") else { throw InputSourceError.emptyStdin }
         return value
     }

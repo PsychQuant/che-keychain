@@ -66,7 +66,7 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, or is empty — the message says which) · `2` user cancelled · `3` stored but unverified (the item is left in place) · `4` a provably bad item is stuck at the destination (`unset` it, then retry); for `set-pair`, `3`/`4` refer to the account named in the message. `has`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, is empty, or could not be determined — the message says which) · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a provably bad item is stuck at the destination (`unset` it, then retry); for `set-pair`, `3`/`4` refer to the account named in the message. `has`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
 
 Dialog labels only affect the prompt: `set --label` sets both the dialog title and the input field's label. For `set-pair`, `--visible-label` and `--secure-label` label the two input fields, while `--title` sets the dialog title. None of these options sets the stored item's label in Keychain Access.
 
@@ -75,6 +75,8 @@ Dialog labels only affect the prompt: `set --label` sets both the dialog title a
 Keychain errors from `set`, `set-pair`, or `unset`, including write-verification and restore failures, may include a numeric `OSStatus` followed by a description supplied by macOS. That description can vary with the system language; use the numeric OSStatus when searching for an error, rather than matching the localized wording. For example, `OSStatus -25299` identifies a duplicate-item error regardless of the description's language.
 
 The CLI exit codes listed above describe the command's outcome; they are separate from the underlying OSStatus values in diagnostics. Scripts should use the CLI exit code to determine the outcome and should not depend on the exact stderr wording. `has` reports only exit code `0` or `1` and does not print these keychain error descriptions.
+
+Exit `1` also covers cleanup that was not attempted because the destination could not be identified safely. That is not a failed delete: no deletion OSStatus is invented, and the report asks you to inspect the destination rather than blindly remove it. Ambiguous matches require inspection in Keychain Access; unlocking alone does not resolve them. On a pair failure, the report retains the first account's complete diagnosis.
 
 ## Security model
 
@@ -86,7 +88,7 @@ The CLI exit codes listed above describe the command's outcome; they are separat
 | Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only. With `--daemon` it refuses — at write time, inside `save()` — to replace an existing prompt-on-read item; a new allow-all item can still be created |
 | Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
-| Copies of the value in this process | the dialog's field, the stdin buffer (wiped best-effort), the clipboard string and the read-back copy are ordinary process memory and are not zeroed reliably; the pasteboard is emptied only after a verified store and only if unchanged |
+| Copies of the value in this process | the dialog's field, the stdin buffer (wipe attempted on success and errors after allocation, best-effort), the clipboard string and the read-back copy are ordinary process memory and are not zeroed reliably; the pasteboard is emptied only after a verified store and only if unchanged |
 
 Key properties:
 

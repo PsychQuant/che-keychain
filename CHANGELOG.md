@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Cleanup refused before a delete now reports a specific refusal with exit 1, not an invented deletion OSStatus or an instruction to remove an unverified item. A rejected restore may leave the destination unknown; exit-code documentation now includes that state (#15).
+- Ambiguous read-back directs the user to inspect the matching items; a pair's second-store failure retains the first store's full diagnostic. stdin registers its best-effort buffer wipe before reading, drops long-lived Data slices, and removes the unused EOF flag (#15).
+- A clipboard destination that becomes unwritable before confirmation is refused without a contradictory replacement warning. Both set dialog sources check their stated existence claim at write time; pair parity is tracked in #14 (#15).
+- Correct the identifier note: C1 controls are refused by set/set-pair, while has/unset retain raw names so legacy items remain reachable (#15).
+
 ## [0.3.0] — 2026-09-11
 
 ### Changed (values)
@@ -30,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `set` now sees every match in the keychain search list, iCloud-synchronized / data-protection twins included: two matches (a second keychain, or a twin) are refused as ambiguous, and a twin alone (no local item) is refused as unsupported — both stored fine before, because the old delete query never looked there. `unset` removes what it can and points at Keychain Access for the rest. An own item that lives in a secondary keychain is re-created in that same keychain.
 - `set --daemon` success line now reads `✓ stored S/A (daemon-readable: any process can read it without a prompt)`.
 
-- `--service` / `--account` (every command) now also reject C1 control characters (U+0080–U+009F); 0.2.x accepted them. The same predicate governs the clipboard and stdin value sources.
+- `--service` / `--account` (set / set-pair) now also reject C1 control characters (U+0080–U+009F); 0.2.x accepted them. The same predicate governs the clipboard and stdin value sources.
 - `set-pair`: a first store that is "stored but unverified" (exit 3) no longer aborts the pair — the second value is stored too and the command exits 3 at the end; only an outcome that leaves nothing usable stops it.
 - The failed-replace recovery (#5's `replaceFailed`) now reads the restored previous value back and reports one of four outcomes (restored / restored but unverifiable / reads back wrong / lost, with the reason) instead of a bare restored-or-not; its wording changed accordingly.
 - `set` / `set-pair` on an existing item: the behaviour now depends on what its decrypt ACL says (#5). Before, `save()` ran `SecItemDelete` (status discarded) then `SecItemAdd`, so an item created by another program surfaced as `errSecDuplicateItem` (-25299) with no explanation.

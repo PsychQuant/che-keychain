@@ -151,6 +151,15 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "u", "--secure-account", "p", "--stdin"]))
     }
 
+    func testLegacyC1IdentifiersStayReachableForHasAndUnset() throws {
+        let legacy = "legacy\u{0080}name"
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", legacy, "--account", "a"]))
+        guard case .has(let service, let account) = try CommandParser.parse("has", ["--service", legacy, "--account", "a"]) else { return XCTFail() }
+        XCTAssertEqual(service, legacy); XCTAssertEqual(account, "a")
+        guard case .unset(let removedService, let removedAccount) = try CommandParser.parse("unset", ["--service", legacy, "--account", "a"]) else { return XCTFail() }
+        XCTAssertEqual(removedService, legacy); XCTAssertEqual(removedAccount, "a")
+    }
+
     func testValidateIdentifierAcceptsTypical() {
         XCTAssertNoThrow(try CommandParser.validateIdentifier("che-transport-tdx", field: "service"))
         XCTAssertNoThrow(try CommandParser.validateIdentifier("client_secret", field: "account"))

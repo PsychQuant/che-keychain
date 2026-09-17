@@ -14,7 +14,7 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
 }
 
 /// One store path for `set` and `set-pair`: the exit code follows the cleanup
-/// outcome (1 = the new value is not in the slot; 3 = in the slot, unverified;
+/// outcome (1 = error or unknown state; 3 = accepted but unverified;
 /// 4 = a bad item is stuck — see MismatchCleanup.exitCode). `note` is appended
 /// to any failure (set-pair says what was already written).
 /// Exit 3 ("stored, unverified") is NOT fatal here: the value IS in the slot,
@@ -145,8 +145,7 @@ case .set(let a):
         default:
             // Unreachable after a passed preflight unless the slot changed meanwhile;
             // say what save() will do (refuse), not what it would do for an own item.
-            overwrite = "An item exists at this destination that che-keychain will NOT replace (its ACL is not this binary's alone); Store will be refused."
-            existsAtDialog = true
+            die("the destination changed to an item this binary cannot replace — nothing was written. Inspect the destination before retrying.")
         }
         let warning = PromptDialog.warningText(daemon: a.daemon, replaces: existsAtDialog == true)
         let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
@@ -232,7 +231,8 @@ case .setPair(let a):
         let first = storeOrDie(service: a.service, account: a.visibleAccount, value: v,
                                note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.secureAccount)) was NOT stored (set-pair stops at a failure that leaves nothing usable); the pair is incomplete until you re-run set-pair.")
         let second = storeOrDie(service: a.service, account: a.secureAccount, value: s,
-                                note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.visibleAccount)) \(first == nil ? "WAS stored and verified" : "was stored but could not be verified") before this failure; the pair is inconsistent until you re-run set-pair.")
+                                note: pairFirstStoreNote(service: a.service, account: a.visibleAccount, firstError: first)
+                                    + "\n  The pair is inconsistent until you re-run set-pair.")
         if first != nil || second != nil {
             let parts = [first, second].compactMap { $0?.errorDescription }
             die(parts.joined(separator: "\n") + "\n  Both halves of the pair are in place; the one(s) above could not be verified.", exitCode: 3)
