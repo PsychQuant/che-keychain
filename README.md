@@ -98,6 +98,21 @@ What this does NOT do:
 - Read other apps' keychain items (Safari passwords, iCloud Keychain, Passwords.app). Those have separate ACLs and access groups; a generic CLI without those entitlements cannot reach them — by design.
 - Provide a value-read API. By design the caller can `has` but not `get`. Reading a stored secret is the consumer binary's job, with its own keychain code (`SecItemCopyMatching`), under its own service identifier.
 
+## Daemon access
+
+`--daemon` sets an "allow all applications" application ACL. It does not bypass partition-ID authorization or unlock the keychain, and it does not guarantee that another executable can read the item without a prompt. Verify access using the actual consuming executable in its intended background session. A successful store verifies the writer's own read-back, not the consumer's access.
+
+On macOS 27.0 (26A428), a Developer ID-signed 0.3.0 writer stored and verified a test item with `--stdin --daemon`, but a separate ad-hoc reader using `SecItemCopyMatching` with interaction disabled returned `-25293` (`errSecAuthFailed`). The item still had an allow-all application ACL. This demonstrates the cross-executable limitation; it does not by itself prove which authorization check rejected the reader.
+
+If the consumer needs a different partition list, the system tool is `security set-generic-password-partition-list`. First identify the exact item, the intended consumer's signing identity, and the partitions that must remain authorized. The command replaces the partition list; do not apply a blanket list to unrelated items. For example, after substituting the selected service, account, keychain and required partition IDs:
+
+```bash
+security set-generic-password-partition-list \
+  -s 'SERVICE' -a 'ACCOUNT' -S 'REQUIRED_PARTITION_IDS' 'KEYCHAIN_PATH'
+```
+
+Run this interactively and omit `-k`: the tool prompts for the keychain password rather than placing it in arguments or shell history. Do not provide that password to an agent. Changing the partition list grants access and requires a deliberate choice of consumers; `che-keychain` does not perform this step automatically. An inaccessible item should be reported as inaccessible, not treated as an empty or missing credential.
+
 ## Signing & notarization
 
 Release builds (`make release-signed`) are signed with the maintainer's Developer ID Application certificate and notarized by Apple. Verify:

@@ -188,7 +188,7 @@ case .set(let a):
             : " (from clipboard; clipboard changed meanwhile, left as is)"
     }
     // A --daemon store is the one implicit ACL widening left: say so.
-    emit(a.daemon ? "✓ stored \(a.service)/\(a.account)\(origin) (daemon-readable: any process can read it without a prompt)"
+    emit(a.daemon ? "✓ stored \(a.service)/\(a.account)\(origin) (allow-all application ACL; other keychain authorization may be required)"
                   : "✓ stored \(a.service)/\(a.account)\(origin)")
 
 case .setPair(let a):

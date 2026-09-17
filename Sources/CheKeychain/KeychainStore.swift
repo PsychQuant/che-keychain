@@ -652,7 +652,7 @@ enum KeychainStore {
     }
 
     private static func add(service: String, account: String, value: String, daemon: Bool) throws {
-        // Daemon-readable: any process may read without a keychain prompt.
+        // Daemon-readable application ACL; partition-ID and lock state still apply.
         // Use ONLY for low-sensitivity creds a headless launchd agent reads.
         // Fail loudly if the access can't be built — never silently store a
         // prompt-on-read item, which would hang the very daemon this serves.
@@ -880,9 +880,10 @@ enum KeychainStore {
         return realpath(exe)
     }
 
-    /// Builds a SecAccess whose every ACL trusts *all* applications (no prompt),
-    /// the programmatic equivalent of `security add-generic-password -A`. Lets a
-    /// headless launchd daemon read the item without a SecurityAgent dialog.
+    /// Builds a SecAccess whose application lists trust *all* applications,
+    /// the programmatic equivalent of `security add-generic-password -A`.
+    /// The application-list check permits other readers; partition-ID authorization
+    /// and keychain lock state may still deny access or require a prompt.
     /// Uses the legacy SecAccess/SecACL API (deprecated but functional on the
     /// macOS file keychain, where generic-password items live).
     private static func allowAllAccess(label: String) throws -> SecAccess {
@@ -898,7 +899,7 @@ enum KeychainStore {
         }
         for acl in acls {
             // nil trusted-application list = any application may use the item
-            // without being prompted ("Allow all applications" in Keychain Access).
+            // at the application-list layer ("Allow all applications" in Keychain Access).
             let setStatus = SecACLSetContents(acl, nil, label as CFString,
                                               SecKeychainPromptSelector(rawValue: 0))
             guard setStatus == errSecSuccess else {

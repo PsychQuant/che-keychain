@@ -95,8 +95,11 @@ enum AppVersion {
       (masked).
       Storage: login.keychain-db (local, NOT iCloud-synced).
 
-      `--daemon` stores the item with an "allow all applications" ACL so a
-      headless launchd agent can read it without a keychain-access prompt. The
+      `--daemon` sets an "allow all applications" ACL. This alone does not
+      guarantee that a different executable or a headless launchd agent can
+      read it: partition-ID authorization and a locked keychain may still
+      prevent access. Test the actual consuming executable before relying on
+      background access. The
       value comes from the chosen source (the dialog, the clipboard behind a
       confirmation, or — with --stdin — the caller itself); only the storage ACL
       is relaxed. Use ONLY for low-sensitivity creds.
@@ -131,12 +134,12 @@ enum AppVersion {
         --visible-account client_id --secure-account client_secret \\
         --title "che-transport-mcp setup"
 
-      # Daemon-readable secret (launchd agent reads it without a prompt)
+      # Allow-all application ACL (verify access with the actual reader)
       che-keychain set --service bus-eta-logger --account tdx_secret --secure --daemon
 
       # Paste-free: copy the token, then run this and confirm the dialog (stored
-      # prompt-on-read; add --daemon only for a headless launchd reader — any
-      # process could then read it)
+      # prompt-on-read; --daemon widens the application ACL but does not
+      # bypass other keychain authorization)
       che-keychain set --service ntu-cool-canvas --account default --from-clipboard
 
       # Automation: pipe exactly one line (never a terminal). Note `pbpaste` leaves

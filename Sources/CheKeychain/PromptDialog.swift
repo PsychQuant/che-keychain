@@ -24,9 +24,9 @@ enum PromptDialog {
     static func warningText(daemon: Bool, replaces: Bool) -> String? {
         switch (daemon, replaces) {
         case (false, false): return nil
-        case (true, false):  return "daemon-readable: any process can read it without a prompt"
+        case (true, false):  return "daemon-readable ACL: other keychain authorization may still be required"
         case (false, true):  return "replaces an existing secret"
-        case (true, true):   return "replaces an existing secret AND makes it daemon-readable: any process can read it without a prompt"
+        case (true, true):   return "replaces an existing secret AND sets a daemon-readable ACL: other keychain authorization may still be required"
         }
     }
 
