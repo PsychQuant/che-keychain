@@ -48,11 +48,8 @@ enum RestoreOutcome: Equatable {
     var exitCode: Int32 { if case .mismatch = self { return 4 }; return 1 }
 }
 
+/// Why no delete was attempted at a destination.
 enum CleanupRefusal: String {
-    case noReference = "the read-back did not identify an item to remove"
-    case inspectionFailed = "the destination could not be inspected"
-    case referenceChanged = "the destination no longer identifies the same item"
-    case notOwned = "the item is not exclusively trusted to this binary"
     /// A name lookup found an item at the destination, but nothing proves it is
     /// the one this invocation wrote: `SecItemAdd` is called without capturing a
     /// reference to the record it creates, and ownership says which binary may
