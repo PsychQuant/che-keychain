@@ -10,7 +10,7 @@ Every CLI / MCP that needs to store an API key or password has a UX problem:
 - Asking the LLM to handle the value: the secret lands in the conversation transcript
 - Custom getpass per tool: every tool re-implements the same prompt, none of them are shared / trusted
 
-`che-keychain` is one signed binary that owns the input UI. Callers invoke it; it pops a native NSAlert; the user types; the value is written to keychain via `SecItemAdd` (an existing item that this binary alone is trusted for is deleted by reference and re-added; nothing is ever updated in place). The caller's process never sees the typed string — they get an exit code.
+`che-keychain` is one signed binary that owns the input UI. Callers invoke it; it pops a native NSAlert; the user types; the value is written to keychain via `SecItemAdd` (plain set recreates items trusted to this binary alone; --replace additionally permits eligible backed-up items; nothing is ever updated in place). The caller's process never sees the typed string — they get an exit code.
 
 ## Install
 
@@ -56,7 +56,7 @@ printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --std
 # landed: 1 = no (a garbled store is removed again; on a rotation the previous
 # value is re-stored and the report states exactly which outcome happened),
 # 3 = it is in the slot but could not be verified (locked keychain), 4 = a
-# provably bad item is stuck there — run the `unset` the report gives first.
+# restore did not match the backup — inspect the destination before retrying.
 
 # Check existence without revealing the value
 che-keychain has --service my-api --account token   # exit 0 if present
@@ -66,7 +66,21 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, or is empty — the message says which) · `2` user cancelled · `3` stored but unverified (the item is left in place) · `4` a provably bad item is stuck at the destination (`unset` it, then retry); for `set-pair`, `3`/`4` refer to the account named in the message. `has`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" (the slot is unchanged, holds the restored previous value, is empty, or could not be determined — the message says which) · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item that is not the one that was backed up (nothing is deleted after a write the keychain accepted, so this is the only outcome that leaves an unproven item behind; inspect it before retrying); for `set-pair`, `3`/`4` refer to the account named in the message. `has` without `--non-empty`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+
+Dialog labels only affect the prompt: `set --label` sets both the dialog title and the input field's label. For `set-pair`, `--visible-label` and `--secure-label` label the two input fields, while `--title` sets the dialog title. None of these options sets the stored item's label in Keychain Access.
+
+`set-pair` remains dialog-only: it does not accept `--stdin`, `--from-clipboard`, or `--daemon`. This keeps both values in one explicit input dialog without introducing an ambiguous two-value stream format. For automation, invoke `set --stdin` separately for each account and check each exit code. The two writes are not an atomic transaction: if the second fails, the first may already be stored. Each write retains its own read-back verification and the exit-code contract above.
+
+Keychain errors from `set`, `set-pair`, or `unset`, including write-verification and restore failures, may include a numeric `OSStatus` followed by a description supplied by macOS. That description can vary with the system language; use the numeric OSStatus when searching for an error, rather than matching the localized wording. For example, `OSStatus -25299` identifies a duplicate-item error regardless of the description's language.
+
+The CLI exit codes listed above describe the command's outcome; they are separate from the underlying OSStatus values in diagnostics. Scripts should use the CLI exit code to determine the outcome and should not depend on the exact stderr wording. `has` without `--non-empty` reports only exit code `0` or `1` and does not print these keychain error descriptions.
+
+`has --non-empty --service S --account A` is an optional, read-only value-shape check: exit `0` means a nonzero byte count, `1` means absent, `2` means present with zero bytes, and `3` means the check was unavailable. It checks only a single item exclusively trusted to this executable with interaction disabled; foreign, allow-all (including `--daemon`), ambiguous and unreadable items return `3`. It never reveals the value or changes the item. Whitespace bytes count as non-empty; this does not validate a token or establish another program's read permission. Plain `has` retains its original existence-only behavior.
+
+Input dialogs show caller-provided explanations in a separate, labeled area. The fixed destination and replacement warning stay together above it; long caller text is shortened to keep them visible. `set-pair` names each account that will be replaced and checks each account's observed existence state again at its write. These checks reject new-versus-existing changes; they do not make the two writes atomic or detect a value change when the item still exists.
+
+Exit `1` also covers cleanup that was not attempted because the destination could not be identified safely. That is not a failed delete: no deletion OSStatus is invented, and the report asks you to inspect the destination rather than blindly remove it. Ambiguous matches require inspection in Keychain Access; unlocking alone does not resolve them. On a pair failure, the report retains the first account's complete diagnosis.
 
 ## Security model
 
@@ -76,9 +90,9 @@ Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other erro
 | User types into NSSecureTextField inside this binary's process | (only this binary sees it) |
 | Caller invokes `… --from-clipboard` | exit code, stderr; the pasteboard itself is readable by the caller and every process. A confirmation dialog (destination + whether an item already exists there + value fingerprint; Return does nothing, Esc cancels) gates the store; the clipboard is emptied afterwards if unchanged |
 | Caller invokes `… --stdin` | the caller supplies the value, so it holds it already; no dialog — the destination goes to stderr. Trusted automation only. With `--daemon` it refuses — at write time, inside `save()` — to replace an existing prompt-on-read item; a new allow-all item can still be created |
-| Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) only if its ACL trusts this binary alone; anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
+| Binary calls `SecItemAdd` to write to `login.keychain-db`; an existing item is re-created (delete by reference + add, old value read back only to restore it if the add fails) by default only if its ACL trusts this binary alone; without --replace, anything else (another trusted application, or an allow-all entry — including our own `--daemon` items) is refused before the dialog opens and must be removed explicitly with `unset` first | (only this binary holds the value in memory, briefly) |
 | Anyone reads it back later via `SecItem*` | needs the same service+account and proper keychain access |
-| Copies of the value in this process | the dialog's field, the stdin buffer (wiped best-effort), the clipboard string and the read-back copy are ordinary process memory and are not zeroed reliably; the pasteboard is emptied only after a verified store and only if unchanged |
+| Copies of the value in this process | the dialog's field, the stdin buffer (wipe attempted on success and errors after allocation, best-effort), the clipboard string and the read-back copy are ordinary process memory and are not zeroed reliably; the pasteboard is emptied only after a verified store and only if unchanged |
 
 Key properties:
 
@@ -91,6 +105,42 @@ What this does NOT do:
 
 - Read other apps' keychain items (Safari passwords, iCloud Keychain, Passwords.app). Those have separate ACLs and access groups; a generic CLI without those entitlements cannot reach them — by design.
 - Provide a value-read API. By design the caller can `has` but not `get`. Reading a stored secret is the consumer binary's job, with its own keychain code (`SecItemCopyMatching`), under its own service identifier.
+
+## Explicit replacement
+
+Use `set --replace` when deliberately replacing an existing foreign or allow-all item, including an existing daemon credential:
+
+```bash
+che-keychain set --service my-api --account token --replace --secure
+che-keychain set --service my-daemon --account token --replace --daemon --secure
+```
+
+Without `--replace`, the existing refusal policy is unchanged. With it, the binary must read the old bytes without interaction and capture the original keychain and access settings before deletion. It reconstructs supported ACL entries in a fresh access object and first verifies the resulting policy (including partition IDs) using a uniquely named temporary item containing only nonsecret probe data. If the backup is unreadable, the policy cannot be reproduced, the probe cannot be removed, or a destination change is observed, the original item is not deleted. A probe cleanup failure reports the probe's identifier for inspection in Keychain Access.
+
+A failed replacement attempts to restore the original bytes and access policy in the original keychain and verifies both. Recovery can still fail or remain unverified; the error reports that state. Replacement is not atomic, does not preserve label/comment/date metadata, and does not guarantee zero downtime under arbitrary OS failures. Exit `0` requires a verified new value; failures retain the documented `1`/`3`/`4` outcomes. Success output identifies the previous ownership classification without revealing either value.
+
+`--replace --stdin --daemon` can rotate a backed-up allow-all item, but still refuses to widen an existing non-allow-all item's access without a dialog. `set-pair` does not support `--replace`. The flag is not a way to bypass unreadable-backup, ambiguous-match or unsupported-keychain refusals.
+
+## Moving or reinstalling the executable
+
+Ownership checks compare resolved executable paths. A symlink to the same executable is treated as the same path; a separate copy at another location is treated as foreign, even if macOS permits that copy to read the item. Matching filenames or a shared signing team do not automatically authorize replacement.
+
+After moving or reinstalling the binary, use the original copy for ordinary updates, or explicitly invoke the new copy with `set --replace`. The new copy must be able to read the old value without interaction and reproduce its access policy; otherwise it refuses before deleting the original item. Establish access through the original trusted application first if needed. Do not assume that being able to read a credential grants permission to silently replace it, and do not delete the old item just to bypass a failed backup.
+
+## Daemon access
+
+`--daemon` sets an "allow all applications" application ACL. It does not bypass partition-ID authorization or unlock the keychain, and it does not guarantee that another executable can read the item without a prompt. Verify access using the actual consuming executable in its intended background session. A successful store verifies the writer's own read-back, not the consumer's access.
+
+On macOS 27.0 (26A428), a Developer ID-signed 0.3.0 writer stored and verified a test item with `--stdin --daemon`, but a separate ad-hoc reader using `SecItemCopyMatching` with interaction disabled returned `-25293` (`errSecAuthFailed`). The item still had an allow-all application ACL. This demonstrates the cross-executable limitation; it does not by itself prove which authorization check rejected the reader.
+
+If the consumer needs a different partition list, the system tool is `security set-generic-password-partition-list`. First identify the exact item, the intended consumer's signing identity, and the partitions that must remain authorized. The command replaces the partition list; do not apply a blanket list to unrelated items. For example, after substituting the selected service, account, keychain and required partition IDs:
+
+```bash
+security set-generic-password-partition-list \
+  -s 'SERVICE' -a 'ACCOUNT' -S 'REQUIRED_PARTITION_IDS' 'KEYCHAIN_PATH'
+```
+
+Run this interactively and omit `-k`: the tool prompts for the keychain password rather than placing it in arguments or shell history. Do not provide that password to an agent. Changing the partition list grants access and requires a deliberate choice of consumers; `che-keychain` does not perform this step automatically. An inaccessible item should be reported as inaccessible, not treated as an empty or missing credential.
 
 ## Signing & notarization
 

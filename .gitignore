@@ -13,3 +13,6 @@ release/
 # IDD per-machine state and attachment manifests — not tracked
 .claude/.idd/state/
 .claude/.idd/attachments/
+
+# Spectra app data
+.spectra/

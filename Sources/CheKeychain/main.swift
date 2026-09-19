@@ -14,16 +14,26 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
 }
 
 /// One store path for `set` and `set-pair`: the exit code follows the cleanup
-/// outcome (1 = the new value is not in the slot; 3 = in the slot, unverified;
+/// outcome (1 = error or unknown state; 3 = accepted but unverified;
 /// 4 = a bad item is stuck — see MismatchCleanup.exitCode). `note` is appended
 /// to any failure (set-pair says what was already written).
 /// Exit 3 ("stored, unverified") is NOT fatal here: the value IS in the slot,
 /// so the caller may go on (set-pair stores its second half) and report 3 at
 /// the end. Returns that error; dies for everything else.
 @discardableResult
-func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, note: String = "") -> KeychainError? {
+func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, allowReplacement: Bool = false, note: String = "") -> KeychainError? {
     do {
-        try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting)
+        let previous = try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting, allowReplacement: allowReplacement)
+        if allowReplacement && previous != .none {
+            let evidence: String
+            switch previous {
+            case .own: evidence = "an item trusted only to this executable"
+            case .allowAll: evidence = "an allow-all item (owner not attributable)"
+            case .foreign(let owners): evidence = "a foreign item trusting: " + (owners.isEmpty ? "unattributed applications" : owners.prefix(8).joined(separator: ", "))
+            case .none, .unsupported: evidence = "the selected item"
+            }
+            emit("→ explicitly replaced \(sanitize(service))/\(sanitize(account)): \(evidence)", to: true)
+        }
         return nil
     } catch let e as KeychainError where e.exitCode == 3 {
         return e
@@ -71,7 +81,7 @@ case .set(let a):
     // Refuse before the user types anything: a foreign/ambiguous item cannot be
     // written to, so the dialog would only collect a secret to throw away.
     do {
-        try KeychainStore.preflight(service: a.service, accounts: [a.account])
+        try KeychainStore.preflight(service: a.service, accounts: [a.account], allowReplacement: a.replace)
     } catch {
         dieWith(error)
     }
@@ -98,7 +108,7 @@ case .set(let a):
             destination: "service=\(sanitize(a.service)) account=\(sanitize(a.account))",
             explain: a.explain,
             fields: [field],
-            warning: PromptDialog.warningText(daemon: a.daemon, replaces: replaces)
+            warning: PromptDialog.warningText(daemon: a.daemon, replacing: existing)
         )
         switch result {
         case .cancel:
@@ -142,13 +152,16 @@ case .set(let a):
             overwrite = "An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
                 + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
             existsAtDialog = true
+        case .foreign, .allowAll:
+            guard a.replace else { die("the destination changed to an item this binary cannot replace — nothing was written.") }
+            overwrite = "An item ALREADY EXISTS: --replace explicitly replaces it, including its application ACL. A readable backup is required before deletion."
+            existsAtDialog = true
         default:
             // Unreachable after a passed preflight unless the slot changed meanwhile;
             // say what save() will do (refuse), not what it would do for an own item.
-            overwrite = "An item exists at this destination that che-keychain will NOT replace (its ACL is not this binary's alone); Store will be refused."
-            existsAtDialog = true
+            die("the destination changed to an item this binary cannot replace — nothing was written. Inspect the destination before retrying.")
         }
-        let warning = PromptDialog.warningText(daemon: a.daemon, replaces: existsAtDialog == true)
+        let warning = PromptDialog.warningText(daemon: a.daemon, replacing: existing)
         let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
         guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain, warning: warning) else {
             emit("Cancelled. The clipboard was left as is.", to: true)
@@ -175,7 +188,7 @@ case .set(let a):
     // On failure the clipboard is left alone so the user can retry — and the
     // message says so, since the success line is where the clearing is reported.
     if let unverified = storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon,
-                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog,
+                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog, allowReplacement: a.replace,
                                    note: a.source == .clipboard ? "\n  The clipboard was left as is." : "") {
         dieWith(unverified, note: a.source == .clipboard ? "\n  The clipboard was left as is." : "")
     }
@@ -188,17 +201,21 @@ case .set(let a):
             : " (from clipboard; clipboard changed meanwhile, left as is)"
     }
     // A --daemon store is the one implicit ACL widening left: say so.
-    emit(a.daemon ? "✓ stored \(a.service)/\(a.account)\(origin) (daemon-readable: any process can read it without a prompt)"
+    emit(a.daemon ? "✓ stored \(a.service)/\(a.account)\(origin) (allow-all application ACL; other keychain authorization may be required)"
                   : "✓ stored \(a.service)/\(a.account)\(origin)")
 
 case .setPair(let a):
     // Both accounts are checked before the dialog so a *refusal* on the second
     // cannot follow a write of the first. A non-refusal failure on the second
     // write is still possible; it is reported together with what was written.
+    let pairStates: [String: Bool]
     do {
-        try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount])
+        pairStates = try KeychainStore.preflight(service: a.service, accounts: [a.visibleAccount, a.secureAccount])
     } catch {
         dieWith(error)
+    }
+    guard let visibleExists = pairStates[a.visibleAccount], let secureExists = pairStates[a.secureAccount] else {
+        die("could not determine both destinations — nothing was written.")
     }
     let visibleLabel = a.visibleLabel ?? a.visibleAccount
     let secureLabel  = a.secureLabel  ?? a.secureAccount
@@ -207,14 +224,13 @@ case .setPair(let a):
         PromptField(name: a.visibleAccount, label: visibleLabel, isSecure: false),
         PromptField(name: a.secureAccount,  label: secureLabel,  isSecure: true)
     ]
-    let pairReplaces = (try? KeychainStore.inspectExisting(service: a.service, account: a.visibleAccount)).map { if case .none = $0 { return false } else { return true } } ?? true
-        || (try? KeychainStore.inspectExisting(service: a.service, account: a.secureAccount)).map { if case .none = $0 { return false } else { return true } } ?? true
+    let replacingAccounts = [a.visibleAccount, a.secureAccount].filter { pairStates[$0] == true }
     let result = PromptDialog.run(
         title: title,
         destination: "service=\(sanitize(a.service))  accounts={\(sanitize(a.visibleAccount)), \(sanitize(a.secureAccount))}",
         explain: a.explain,
         fields: fields,
-        warning: PromptDialog.warningText(daemon: false, replaces: pairReplaces)
+        warning: PromptDialog.pairWarningText(replacing: replacingAccounts)
     )
     switch result {
     case .cancel:
@@ -229,13 +245,15 @@ case .setPair(let a):
         }
         // A "stored, unverified" first half (exit 3) is in the slot, so the second
         // half is still stored; both outcomes are reported at the end with exit 3.
-        let first = storeOrDie(service: a.service, account: a.visibleAccount, value: v,
+        let first = storeOrDie(service: a.service, account: a.visibleAccount, value: v, expectingExisting: visibleExists,
                                note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.secureAccount)) was NOT stored (set-pair stops at a failure that leaves nothing usable); the pair is incomplete until you re-run set-pair.")
-        let second = storeOrDie(service: a.service, account: a.secureAccount, value: s,
-                                note: "\n  Note: \(sanitize(a.service))/\(sanitize(a.visibleAccount)) \(first == nil ? "WAS stored and verified" : "was stored but could not be verified") before this failure; the pair is inconsistent until you re-run set-pair.")
+        let second = storeOrDie(service: a.service, account: a.secureAccount, value: s, expectingExisting: secureExists,
+                                note: pairFirstStoreNote(service: a.service, account: a.visibleAccount, firstError: first)
+                                    + "\n  The pair is inconsistent until you re-run set-pair.")
         if first != nil || second != nil {
             let parts = [first, second].compactMap { $0?.errorDescription }
-            die(parts.joined(separator: "\n") + "\n  Both halves of the pair are in place; the one(s) above could not be verified.", exitCode: 3)
+            die(parts.joined(separator: "\n")
+                + "\n  The keychain accepted both writes; the value now at the account(s) named above could not be verified.", exitCode: 3)
         }
         emit("✓ stored \(a.service)/{\(a.visibleAccount), \(a.secureAccount)}")
     }
@@ -246,6 +264,17 @@ case .has(let service, let account):
     } else {
         exit(1)
     }
+
+case .hasNonEmpty(let service, let account):
+    let status = KeychainStore.nonEmptyStatus(service: service, account: account)
+    switch status {
+    case .present, .missing: break
+    case .empty:
+        emit("item exists but its value is empty: \(sanitize(service))/\(sanitize(account))", to: true)
+    case .unavailable:
+        emit("could not check a single item exclusively trusted to this binary without interaction: \(sanitize(service))/\(sanitize(account)); no value was revealed or changed.", to: true)
+    }
+    exit(status.exitCode)
 
 case .unset(let service, let account):
     let removed: [String]

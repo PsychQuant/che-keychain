@@ -21,13 +21,32 @@ enum PromptDialog {
     /// The one sentence that must survive on the dialog's protected first line.
     /// Both facts are kept when both hold — the worst combination (an existing
     /// secret destroyed AND made world-readable) must not lose one of them.
-    static func warningText(daemon: Bool, replaces: Bool) -> String? {
-        switch (daemon, replaces) {
-        case (false, false): return nil
-        case (true, false):  return "daemon-readable: any process can read it without a prompt"
-        case (false, true):  return "replaces an existing secret"
-        case (true, true):   return "replaces an existing secret AND makes it daemon-readable: any process can read it without a prompt"
+    ///
+    /// `replacing` is the destination's current access class, so the line can say
+    /// what is there now and what the replacement turns it into. "Replaces an
+    /// existing secret" alone does not let anyone judge the change: replacing a
+    /// world-readable item with a binary-only one narrows access, and the reverse
+    /// widens it, and the dialog is the last place either can be stopped (#7 L1).
+    static func warningText(daemon: Bool, replacing existing: KeychainStore.Existing) -> String? {
+        let becomes = daemon
+            ? "one any application can read (other keychain authorization may still be required)"
+            : "one only this binary can read"
+        let now: String
+        switch existing {
+        case .none:
+            return daemon ? "daemon-readable ACL: other keychain authorization may still be required" : nil
+        case .own:
+            now = "a secret only this binary can read"
+        case .allowAll:
+            now = "a secret ANY application can read"
+        case .foreign(let owners):
+            now = owners.isEmpty
+                ? "a secret nothing ties to this binary"
+                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read — that access ends"
+        case .unsupported:
+            now = "an existing secret whose access this binary cannot inspect"
         }
+        return "replaces \(now) with \(becomes)"
     }
 
     static func run(title: String, destination: String, explain: String?, fields: [PromptField], warning: String? = nil) -> PromptResult {
@@ -45,30 +64,38 @@ enum PromptDialog {
         // fields silently fail to paste (issue #1). Install a standard Edit menu.
         installEditMenuIfNeeded(app)
 
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = buildInformativeText(destination: destination, explain: explain, warning: warning)
-        alert.addButton(withTitle: "Store")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
-
-        let inputs = buildAccessoryView(for: fields)
-        alert.accessoryView = inputs.container
-        // Focus the first field so the user can start typing immediately.
-        if let first = inputs.fieldViews.first {
-            alert.window.initialFirstResponder = first
-        }
-
+        let built = makeInputAlert(title: title, destination: destination, explain: explain, fields: fields, warning: warning)
+        let alert = built.alert
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else {
             return .cancel
         }
 
         var values: [String: String] = [:]
-        for (field, view) in zip(fields, inputs.fieldViews) {
+        for (field, view) in zip(fields, built.fieldViews) {
             values[field.name] = view.stringValue
         }
         return .accept(values: values)
+    }
+
+    static func pairWarningText(replacing accounts: [String]) -> String? {
+        guard !accounts.isEmpty else { return nil }
+        return "replaces existing secrets for accounts: " + accounts.map(sanitize).joined(separator: ", ")
+    }
+
+    /// Build the input alert without presenting it. Trusted destination text
+    /// remains in informativeText; caller explanation lives in the accessory.
+    static func makeInputAlert(title: String, destination: String, explain: String?, fields: [PromptField], warning: String? = nil) -> (alert: NSAlert, fieldViews: [NSTextField]) {
+        let alert = NSAlert()
+        alert.messageText = sanitize(title)
+        alert.informativeText = buildInformativeText(destination: destination, explain: nil, warning: warning)
+        alert.addButton(withTitle: "Store")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        let inputs = buildAccessoryView(for: fields, explain: explain)
+        alert.accessoryView = inputs.container
+        alert.window.initialFirstResponder = inputs.fieldViews.first
+        return (alert, inputs.fieldViews)
     }
 
     /// Confirmation-only alert (no input field) for `--from-clipboard` (#6): the
@@ -138,12 +165,26 @@ enum PromptDialog {
         app.mainMenu = makeMainMenuWithEditMenu()
     }
 
-    private static func buildAccessoryView(for fields: [PromptField]) -> (container: NSView, fieldViews: [NSTextField]) {
+    private static func buildAccessoryView(for fields: [PromptField], explain: String?) -> (container: NSView, fieldViews: [NSTextField]) {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
+
+        if let explain, !explain.isEmpty {
+            let heading = NSTextField(labelWithString: "Caller-provided explanation")
+            heading.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+            stack.addArrangedSubview(heading)
+            let shown = String(explain.prefix(512)) + (explain.count > 512 ? "…" : "")
+            let text = NSTextField(wrappingLabelWithString: shown)
+            text.preferredMaxLayoutWidth = 360
+            text.maximumNumberOfLines = 6
+            text.lineBreakMode = .byTruncatingTail
+            text.setAccessibilityLabel("Caller-provided explanation")
+            text.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            stack.addArrangedSubview(text)
+        }
 
         var fieldViews: [NSTextField] = []
         for field in fields {
@@ -152,8 +193,10 @@ enum PromptDialog {
             row.alignment = .leading
             row.spacing = 2
 
-            let label = NSTextField(labelWithString: field.label)
+            let label = NSTextField(labelWithString: sanitize(field.label))
             label.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.lineBreakMode = .byTruncatingTail
+            label.widthAnchor.constraint(equalToConstant: 360).isActive = true
 
             let input: NSTextField = field.isSecure ? NSSecureTextField() : NSTextField()
             input.frame = NSRect(x: 0, y: 0, width: 360, height: 22)
@@ -169,7 +212,7 @@ enum PromptDialog {
         }
 
         // Wrap in a container view so NSAlert sizes the accessory correctly.
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: CGFloat(fields.count) * 56))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: max(CGFloat(fields.count) * 56, stack.fittingSize.height)))
         container.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),

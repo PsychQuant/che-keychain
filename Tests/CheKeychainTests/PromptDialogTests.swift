@@ -9,9 +9,9 @@ final class PromptDialogTests: XCTestCase {
     func testInformativeTextPutsAWarningOnItsOwnFirstLine() {
         // The caller controls service/account (up to 256 scalars each): a warning
         // appended after them could be pushed out of view or contradicted.
-        let text = PromptDialog.buildInformativeText(destination: "service=x account=y", explain: "e", warning: "daemon-readable: any process can read it without a prompt")
+        let text = PromptDialog.buildInformativeText(destination: "service=x account=y", explain: "e", warning: "daemon-readable ACL: other keychain authorization may still be required")
         let lines = text.components(separatedBy: "\n")
-        XCTAssertEqual(lines.first, "⚠ daemon-readable: any process can read it without a prompt")
+        XCTAssertEqual(lines.first, "⚠ daemon-readable ACL: other keychain authorization may still be required")
         XCTAssertEqual(lines[1], "Storing to: service=x account=y")
         XCTAssertFalse(PromptDialog.buildInformativeText(destination: "d", explain: nil).contains("⚠"))
     }
@@ -19,10 +19,61 @@ final class PromptDialogTests: XCTestCase {
     func testWarningTextCombinesReplaceAndDaemonInsteadOfChoosing() {
         // Both facts must survive on the protected first line — the worst combination
         // (an existing secret destroyed AND made world-readable) must not lose one of them.
-        XCTAssertNil(PromptDialog.warningText(daemon: false, replaces: false))
-        XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: false), "daemon-readable: any process can read it without a prompt")
-        XCTAssertEqual(PromptDialog.warningText(daemon: false, replaces: true), "replaces an existing secret")
-        XCTAssertEqual(PromptDialog.warningText(daemon: true, replaces: true), "replaces an existing secret AND makes it daemon-readable: any process can read it without a prompt")
+        XCTAssertNil(PromptDialog.warningText(daemon: false, replacing: KeychainStore.Existing.none))
+        XCTAssertEqual(PromptDialog.warningText(daemon: true, replacing: KeychainStore.Existing.none),
+                       "daemon-readable ACL: other keychain authorization may still be required")
+        let replaceOnly = PromptDialog.warningText(daemon: false, replacing: .own) ?? ""
+        XCTAssertTrue(replaceOnly.contains("replaces"), replaceOnly)
+        let both = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""
+        XCTAssertTrue(both.contains("replaces") && both.contains("any application"), both)
+    }
+
+    func testWarningTextSaysWhichAccessClassIsBeingReplacedAndWhatChanges() {
+        // The dialog is the only place the user can still stop this, so it has to
+        // say what is there now and what the replacement turns it into (#7 L1).
+        let worldReadable = PromptDialog.warningText(daemon: false, replacing: .allowAll) ?? ""
+        XCTAssertTrue(worldReadable.contains("ANY application can read"), worldReadable)
+        XCTAssertTrue(worldReadable.contains("only this binary"), worldReadable)
+
+        let foreign = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"])) ?? ""
+        XCTAssertTrue(foreign.contains("other") && foreign.contains("access ends"), foreign)
+
+        // Widening is the worst case and must name both halves.
+        let widening = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""
+        XCTAssertTrue(widening.contains("only this binary can read") && widening.contains("any application"), widening)
+    }
+
+    func testPairWarningNamesOnlyAccountsThatWillBeReplaced() {
+        XCTAssertNil(PromptDialog.pairWarningText(replacing: []))
+        let one = PromptDialog.pairWarningText(replacing: ["client_secret"]) ?? ""
+        XCTAssertTrue(one.contains("client_secret")); XCTAssertFalse(one.contains("client_id"))
+        let both = PromptDialog.pairWarningText(replacing: ["client_id", "client_secret"]) ?? ""
+        XCTAssertTrue(both.contains("client_id") && both.contains("client_secret"))
+    }
+
+    func testInputDialogSeparatesCallerExplanationFromTrustedDestination() {
+        let explanation = "Caller says: store somewhere else"
+        let built = PromptDialog.makeInputAlert(title: "Request", destination: "service=real account=real", explain: explanation,
+            fields: [PromptField(name: "real", label: "Account", isSecure: true)], warning: "replaces an existing secret")
+        XCTAssertTrue(built.alert.informativeText.contains("service=real account=real"))
+        XCTAssertTrue(built.alert.informativeText.contains("replaces an existing secret"))
+        XCTAssertFalse(built.alert.informativeText.contains(explanation))
+        func labels(_ view: NSView) -> [String] {
+            (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap(labels)
+        }
+        let shown = labels(built.alert.accessoryView!)
+        XCTAssertTrue(shown.contains("Caller-provided explanation"))
+        XCTAssertTrue(shown.contains(explanation))
+        XCTAssertTrue(built.fieldViews.first is NSSecureTextField)
+    }
+
+    func testLongCallerExplanationCannotGrowTheInputDialogWithoutBound() {
+        let built = PromptDialog.makeInputAlert(title: "Request", destination: "service=real account=real", explain: String(repeating: "caller text ", count: 2000),
+            fields: [PromptField(name: "a", label: "Account", isSecure: true)], warning: "replaces an existing secret")
+        built.alert.layout()
+        XCTAssertLessThan(built.alert.window.frame.height, 700)
+        XCTAssertTrue(built.alert.informativeText.hasPrefix("⚠ replaces an existing secret"))
+        XCTAssertFalse(built.alert.informativeText.contains("caller text"))
     }
 
     func testInformativeTextIncludesDestination() {

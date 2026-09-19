@@ -45,6 +45,14 @@ final class CommandParserTests: XCTestCase {
         }
     }
 
+    func testSetReplaceIsExplicitAndDoesNotExtendSetPair() throws {
+        guard case .set(let explicit) = try CommandParser.parse("set", ["--service", "s", "--account", "a", "--replace", "--stdin"]) else { return XCTFail() }
+        XCTAssertTrue(explicit.replace)
+        guard case .set(let plain) = try CommandParser.parse("set", ["--service", "s", "--account", "a"]) else { return XCTFail() }
+        XCTAssertFalse(plain.replace)
+        XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "id", "--secure-account", "secret", "--replace"]))
+    }
+
     func testSetParsesDaemonFlag() throws {
         let cmd = try CommandParser.parse("set", ["--service", "S", "--account", "A", "--daemon"])
         guard case .set(let args) = cmd else { return XCTFail("expected .set, got \(cmd)") }
@@ -151,12 +159,27 @@ final class CommandParserTests: XCTestCase {
         XCTAssertThrowsError(try CommandParser.parse("set-pair", ["--service", "s", "--visible-account", "u", "--secure-account", "p", "--stdin"]))
     }
 
+    func testLegacyC1IdentifiersStayReachableForHasAndUnset() throws {
+        let legacy = "legacy\u{0080}name"
+        XCTAssertThrowsError(try CommandParser.parse("set", ["--service", legacy, "--account", "a"]))
+        guard case .has(let service, let account) = try CommandParser.parse("has", ["--service", legacy, "--account", "a"]) else { return XCTFail() }
+        XCTAssertEqual(service, legacy); XCTAssertEqual(account, "a")
+        guard case .unset(let removedService, let removedAccount) = try CommandParser.parse("unset", ["--service", legacy, "--account", "a"]) else { return XCTFail() }
+        XCTAssertEqual(removedService, legacy); XCTAssertEqual(removedAccount, "a")
+    }
+
     func testValidateIdentifierAcceptsTypical() {
         XCTAssertNoThrow(try CommandParser.validateIdentifier("che-transport-tdx", field: "service"))
         XCTAssertNoThrow(try CommandParser.validateIdentifier("client_secret", field: "account"))
     }
 
     // MARK: - has / unset
+
+    func testHasNonEmptySelectsTheOptInProbe() throws {
+        guard case .hasNonEmpty(let service, let account) = try CommandParser.parse("has", ["--service", "s", "--account", "a", "--non-empty"]) else { return XCTFail() }
+        XCTAssertEqual(service, "s"); XCTAssertEqual(account, "a")
+        XCTAssertThrowsError(try CommandParser.parse("has", ["--service", "s", "--non-empty"]))
+    }
 
     func testHasRequiresBoth() throws {
         let cmd = try CommandParser.parse("has", ["--service", "S", "--account", "A"])

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `set --replace` supports explicit replacement of eligible foreign/allow-all items. It requires a readable backup and nonsecret access-policy rehearsal before deletion, rebuilds fresh ACL objects for recovery, and verifies restored bytes plus policy. Plain set stays conservative; stdin still cannot widen a non-allow-all ACL (#7).
+
+- Optional `has --non-empty`: 0 nonzero bytes, 1 absent, 2 empty, 3 unavailable. It reads only a single own item with interaction disabled, reveals no value and changes nothing; plain has remains existence-only (#13).
+
+### Fixed
+
+- Nothing at a destination is deleted once the keychain has accepted the write. A name lookup finds whichever item currently carries that service and account, and an ACL says which binary may read an item rather than which write created it, so neither shows the item is this one's. A writer that deleted and recreated the destination between the add and the read-back previously had its credential deleted and an older backup written over the slot. A proven-bad value is now left in place and reported; a backup goes back only into a destination observed to hold no item, and only when the add itself failed (#7).
+
+- The noninteractive widening check reads the access settings captured in the backup and reconfirmed immediately before the delete, instead of the classification taken before the backup existed. An ACL tightened in that window no longer authorizes an allow-all rotation (#7).
+
+- Rotation eligibility asks whether an allow-all decrypt entry exists rather than whether the item classifies as allow-all. An ACL carrying one alongside named applications is already readable by everything, so rotating it widens nothing and is no longer refused (#7).
+
+- The replacement dialog names the access class at the destination and what the replacement turns it into, instead of "replaces an existing secret" for every case (#7).
+
+- Exit 4 has one meaning in the code, the help text, `README.md` and `CLAUDE.md`: a restore was accepted whose bytes or access settings do not match the backup. It is now the only outcome that can leave an unproven item behind (#7, #15).
+
+- A restore that could not be read back says which remedy fits: two matching items are not resolved by unlocking the keychain, and are no longer told to be (#15).
+
+- `set-pair` reports that the keychain accepted both writes and that the value at the named account could not be verified, instead of claiming both halves are in place — an unreadable or ambiguous read-back establishes neither (#15).
+
+- Pair consent uses a fail-closed existence snapshot for both accounts, identifies each replacement and passes both claims to save for rechecking. Input-dialog explanations are separated from fixed destination/warning text, with bounded caller text (#14).
+
+- Cleanup refused before a delete now reports a specific refusal with exit 1, not an invented deletion OSStatus or an instruction to remove an unverified item. A rejected restore may leave the destination unknown; exit-code documentation now includes that state (#15).
+- Ambiguous read-back directs the user to inspect the matching items; a pair's second-store failure retains the first store's full diagnostic. stdin registers its best-effort buffer wipe before reading, drops long-lived Data slices, and removes the unused EOF flag (#15).
+- A clipboard destination that becomes unwritable before confirmation is refused without a contradictory replacement warning. Both set dialog sources check their stated existence claim at write time; pair parity is tracked in #14 (#15).
+- Correct the identifier note: C1 controls are refused by set/set-pair, while has/unset retain raw names so legacy items remain reachable (#15).
+
 ## [0.3.0] — 2026-09-11
 
 ### Changed (values)
@@ -30,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `set` now sees every match in the keychain search list, iCloud-synchronized / data-protection twins included: two matches (a second keychain, or a twin) are refused as ambiguous, and a twin alone (no local item) is refused as unsupported — both stored fine before, because the old delete query never looked there. `unset` removes what it can and points at Keychain Access for the rest. An own item that lives in a secondary keychain is re-created in that same keychain.
 - `set --daemon` success line now reads `✓ stored S/A (daemon-readable: any process can read it without a prompt)`.
 
-- `--service` / `--account` (every command) now also reject C1 control characters (U+0080–U+009F); 0.2.x accepted them. The same predicate governs the clipboard and stdin value sources.
+- `--service` / `--account` (set / set-pair) now also reject C1 control characters (U+0080–U+009F); 0.2.x accepted them. The same predicate governs the clipboard and stdin value sources.
 - `set-pair`: a first store that is "stored but unverified" (exit 3) no longer aborts the pair — the second value is stored too and the command exits 3 at the end; only an outcome that leaves nothing usable stops it.
 - The failed-replace recovery (#5's `replaceFailed`) now reads the restored previous value back and reports one of four outcomes (restored / restored but unverifiable / reads back wrong / lost, with the reason) instead of a bare restored-or-not; its wording changed accordingly.
 - `set` / `set-pair` on an existing item: the behaviour now depends on what its decrypt ACL says (#5). Before, `save()` ran `SecItemDelete` (status discarded) then `SecItemAdd`, so an item created by another program surfaced as `errSecDuplicateItem` (-25299) with no explanation.
