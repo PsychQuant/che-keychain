@@ -486,6 +486,26 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try readOwn(account: "rot"), "v1", "and the original item is untouched")
     }
 
+    // MARK: - #7 acceptance: a `security`-created item (F1)
+
+    func testASecurityCreatedItemIsRefusedCleanlyWithThePartitionRemedy() throws {
+        // #7 acceptance names `security`-created items. Such items carry the
+        // partition `apple-tool:`, so their value cannot be read without the
+        // login-keychain password even when the application ACL is allow-all —
+        // and a replacement needs a non-interactive backup. The refusal must be
+        // clean (nothing deleted) and must tell the user the way through.
+        for (account, allowAll) in [("secA", true), ("secP", false)] {
+            try seedForeignItem(account: account, value: "old", allowAll: allowAll)
+            XCTAssertThrowsError(try KeychainStore.save(service: service, account: account, value: "new",
+                                                       daemon: allowAll, mayWidenExistingACL: false, allowReplacement: true)) { err in
+                guard case KeychainError.replacementBackupUnavailable = err else { return XCTFail("\(account): got \(err)") }
+                let msg = (err as? LocalizedError)?.errorDescription ?? ""
+                XCTAssertTrue(msg.contains("apple-tool:") && msg.contains("security delete-generic-password"), msg)
+            }
+            XCTAssertEqual(try readForeign(account: account), "old", "\(account): the original item is untouched")
+        }
+    }
+
     func testAnAllowAllEntryMixedWithNamedApplicationsStillRotates() throws {
         // allow-all + another application in one ACL classifies foreign, but the
         // item is already readable by everything: rotating it widens nothing.
@@ -649,7 +669,8 @@ final class KeychainStoreTests: XCTestCase {
         let lost = msg(.lost(.readdFailed(-25293)))
         XCTAssertTrue(lost.contains("could NOT be restored") && lost.contains("state is unknown") && !lost.contains("now absent") && lost.contains("-25293"), lost)
         let wrong = msg(.mismatch(.differs))
-        XCTAssertTrue(wrong.contains("reads back differs") && wrong.contains("unset"), wrong)
+        XCTAssertTrue(wrong.contains("reads back differs") && wrong.contains("Keychain Access"), wrong)
+        XCTAssertFalse(wrong.contains("unset"), "the re-add and read-back are by name; no blind removal advice: \(wrong)")
     }
 
     func testEveryKeychainErrorCarriesItsExitCode() {

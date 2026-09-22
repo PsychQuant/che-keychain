@@ -40,7 +40,7 @@ che-keychain has --service <svc> --account <acct>
 che-keychain unset --service <svc> [--account <acct>]
 ```
 
-Exit codes you should react to (`set` / `set-pair`, 0.3.0+): `0` stored and verified · `1` any other error, including "the new value did not land" (see stderr — it says whether the slot is unchanged, holds the restored previous value, is empty, or has an unknown state) · `2` user cancelled · `3` write accepted but could not be verified (cleanup leaves the destination alone; keychain locked or ambiguous match) · `4` a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item that is not the one that was backed up; inspect it (nothing is deleted after a write the keychain accepted). Plain `has`: `0` present, `1` absent.
+Exit codes you should react to (`set` / `set-pair`, 0.3.0+): `0` stored and verified · `1` any other error, including "the new value did not land" — nothing is removed (see stderr — it says whether the slot is unchanged, holds a value that read back wrong and was left in place, is empty, holds the restored previous value, or has an unknown state) · `2` user cancelled · `3` write accepted but could not be verified (cleanup leaves the destination alone; keychain locked or ambiguous match) · `4` a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item that is not the one that was backed up; inspect it in Keychain Access, do not remove it on this report alone. Plain `has`: `0` present, `1` absent.
 
 ## Discipline
 

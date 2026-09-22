@@ -42,7 +42,7 @@ enum PromptDialog {
         case .foreign(let owners):
             now = owners.isEmpty
                 ? "a secret nothing ties to this binary"
-                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read — that access ends"
+                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read (their access to the OLD value ends)"
         case .unsupported:
             now = "an existing secret whose access this binary cannot inspect"
         }

@@ -36,7 +36,8 @@ final class PromptDialogTests: XCTestCase {
         XCTAssertTrue(worldReadable.contains("only this binary"), worldReadable)
 
         let foreign = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"])) ?? ""
-        XCTAssertTrue(foreign.contains("other") && foreign.contains("access ends"), foreign)
+        XCTAssertTrue(foreign.contains("other") && foreign.contains("access to the OLD value ends"), foreign)
+        XCTAssertTrue(foreign.contains("only this binary"), "must also say what it becomes: \(foreign)")
 
         // Widening is the worst case and must name both halves.
         let widening = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""

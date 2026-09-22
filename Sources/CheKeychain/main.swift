@@ -13,17 +13,18 @@ func die(_ message: String, exitCode: Int32 = 1) -> Never {
     exit(exitCode)
 }
 
-/// One store path for `set` and `set-pair`: the exit code follows the cleanup
-/// outcome (1 = error or unknown state; 3 = accepted but unverified;
-/// 4 = a bad item is stuck — see MismatchCleanup.exitCode). `note` is appended
-/// to any failure (set-pair says what was already written).
+/// One store path for `set` and `set-pair`: the exit code follows the observed
+/// outcome (1 = error, unknown state, or a proven-bad value left in place;
+/// 3 = accepted but unverified; 4 = a restore that does not match its backup —
+/// see KeychainError.exitCode). `note` is appended to any failure (set-pair
+/// says what was already written).
 /// Exit 3 ("stored, unverified") is NOT fatal here: the value IS in the slot,
 /// so the caller may go on (set-pair stores its second half) and report 3 at
 /// the end. Returns that error; dies for everything else.
 @discardableResult
-func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, allowReplacement: Bool = false, note: String = "") -> KeychainError? {
+func storeOrDie(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, allowReplacement: Bool = false, expectedClass: KeychainStore.Existing? = nil, note: String = "") -> KeychainError? {
     do {
-        let previous = try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting, allowReplacement: allowReplacement)
+        let previous = try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting, allowReplacement: allowReplacement, expectedClass: expectedClass)
         if allowReplacement && previous != .none {
             let evidence: String
             switch previous {
@@ -91,6 +92,7 @@ case .set(let a):
     let value: String
     var clipboardChangeCountAtRead: Int? = nil
     var existsAtDialog: Bool? = nil   // dialog / clipboard: what the dialog claimed; checked again at write time
+    var classAtDialog: KeychainStore.Existing? = nil   // --replace: the access class the dialog described; consent is for THAT (#7 L1)
     switch a.source {
     case .dialog:
         let title = a.label ?? "Enter credential"
@@ -103,6 +105,7 @@ case .set(let a):
         let replaces: Bool
         if case .none = existing { replaces = false } else { replaces = true }
         existsAtDialog = replaces
+        if a.replace { classAtDialog = existing }
         let result = PromptDialog.run(
             title: title,
             destination: "service=\(sanitize(a.service)) account=\(sanitize(a.account))",
@@ -161,6 +164,7 @@ case .set(let a):
             // say what save() will do (refuse), not what it would do for an own item.
             die("the destination changed to an item this binary cannot replace — nothing was written. Inspect the destination before retrying.")
         }
+        if a.replace { classAtDialog = existing }
         let warning = PromptDialog.warningText(daemon: a.daemon, replacing: existing)
         let explain = "\(overwrite)\nValue: \(InputSource.fingerprint(read)) (from the clipboard, line breaks at the ends removed).\nOnce stored and verified, the clipboard is emptied (every type on it) if it has not changed meanwhile. Return does nothing, Esc cancels; click Store or press ⌘S to confirm."
         guard PromptDialog.confirm(title: "Store the clipboard's contents?", destination: destination, explain: explain, warning: warning) else {
@@ -188,7 +192,7 @@ case .set(let a):
     // On failure the clipboard is left alone so the user can retry — and the
     // message says so, since the success line is where the clearing is reported.
     if let unverified = storeOrDie(service: a.service, account: a.account, value: value, daemon: a.daemon,
-                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog, allowReplacement: a.replace,
+                                   mayWidenExistingACL: a.source != .stdin, expectingExisting: existsAtDialog, allowReplacement: a.replace, expectedClass: classAtDialog,
                                    note: a.source == .clipboard ? "\n  The clipboard was left as is." : "") {
         dieWith(unverified, note: a.source == .clipboard ? "\n  The clipboard was left as is." : "")
     }

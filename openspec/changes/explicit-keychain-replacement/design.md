@@ -6,7 +6,7 @@ The writer deliberately recreates items to avoid retaining another program's ACL
 
 Goals: deliberate replacement, mandatory pre-delete backup, recovery of old bytes and access settings, and accurate failure reporting.
 
-Non-goals: atomic transactions, universal daemon read access, automatic migration, replacement without a readable backup, preservation of item label/comment/dates, changes to set-pair input sources, or attributing an item found at the destination to a particular write by this or any other process.
+Non-goals: atomic transactions, universal daemon read access, automatic migration, replacement without a readable backup, preservation of item label/comment/dates, changes to set-pair input sources, attributing an item found at the destination to a particular write by this or any other process, or replacing an item whose value cannot be read with prompts disabled — which includes every item created by `security add-generic-password` (partition `apple-tool:`), with or without `-A`. Issue #7's acceptance was narrowed to this on 2026-09-22 (decision comment on #7): the alternative, prompting for the login-keychain password during the backup, would break the prompts-disabled invariant and is deferred to a separate issue if ever wanted.
 
 ## Decisions
 
@@ -30,7 +30,7 @@ Once the keychain has accepted the new value, nothing at the destination is dele
 
 ### Outcome reporting
 
-General errors and unavailable recovery return 1; accepted but unverifiable new writes return 3; exit 4 means the destination holds an item this command could neither clean up nor prove it restored, and the report names the remedy for that specific case — `unset` when the item is ours to remove, inspection in Keychain Access when two items match or ownership is unproven. One sentence covers both the help text and the two documentation files, so the code, `Version.swift`, `README.md` and `CLAUDE.md` do not drift into separate definitions again. Exit 0 requires a verified new value. Report whether original bytes/access were restored, remain unverified or failed. No failure path issues an instruction to blindly remove an unidentified item.
+General errors and unavailable recovery return 1; accepted but unverifiable new writes return 3; exit 4 means a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item this command cannot prove is its restore — and the remedy on every path is to inspect in Keychain Access, never a blind `unset`, because the re-add and the read-back are both by name. One sentence covers both the help text and the two documentation files, so the code, `Version.swift`, `README.md` and `CLAUDE.md` do not drift into separate definitions again. Exit 0 requires a verified new value. Report whether original bytes/access were restored, remain unverified or failed. No failure path issues an instruction to blindly remove an unidentified item.
 
 ## Implementation Contract
 

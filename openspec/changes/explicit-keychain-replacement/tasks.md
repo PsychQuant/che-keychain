@@ -25,4 +25,14 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 4.5 Report the new refusal and the unremoved proven-bad value in terms of what was established, including the dialog's account of which access class is being replaced and what the replacement changes (L1); verify the wording against each read-back outcome.
 - [x] 4.6 State one meaning for exit 4 in the code, the help text, `README.md` and `CLAUDE.md`, and give the remedy that fits the case at hand (M2, shared with issue #15).
 - [x] 4.7 Carry the read-back reason through the unverified-restore outcomes so an ambiguous destination is not told to unlock the keychain, and stop the pair's exit 3 from reporting both halves as in place (M3 and M4, issue #15); verify each message against the outcome it describes.
-- [ ] 4.8 Run the complete suite plus the new interleaving tests, then `/idd-verify --pr 17`; a pass requires no HIGH finding and no message that claims more than the code establishes.
+- [x] 4.8 Run the complete suite plus the new interleaving tests, then `/idd-verify --pr 17`; a pass requires no HIGH finding and no message that claims more than the code establishes. — Round-2 verify ran 2026-09-20: FAIL (2 HIGH, 4 MEDIUM); findings became section 5.
+
+## 5. Round 3 — round-2 verify findings
+
+- [x] 5.1 (F1) Establish, by test, what happens to a `security`-created item under `--replace`: refused at the noninteractive backup read (partition `apple-tool:`), nothing deleted. Acceptance narrowed by decision on #7 (2026-09-22); the refusal names the cause and the way through.
+- [x] 5.2 (F2/F16) Exit 1 described removal and restore that no longer happen; help, README and CLAUDE.md now enumerate the states the code can leave, including a proven-bad value left in place.
+- [x] 5.3 (F3) The own-rotation exit-4 message no longer hands out `unset`; every exit-4 surface says inspect.
+- [x] 5.4 (F4) "The only outcome that leaves an unproven item behind" struck from README, help and CHANGELOG; design.md's exit-4 definition aligned (F17).
+- [x] 5.5 (F5) `--replace` consent is bound to the access class the dialog described: a class change by write time refuses (`destinationClassChanged`).
+- [x] 5.6 (F6/F9/F10/F13/F18) Messages say only what was observed: explicit-path `.missing` states the previous item is gone and not put back; a failed inspect during restore is `destinationUnknown`, not "an item was there"; `ReadBack.item` and stale comments removed; foreign+daemon dialog wording no longer contradicts itself.
+- [ ] 5.7 Full suite green, then `/idd-verify --pr 17` round 3 (Codex quota permitting).

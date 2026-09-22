@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The replacement dialog names the access class at the destination and what the replacement turns it into, instead of "replaces an existing secret" for every case (#7).
 
-- Exit 4 has one meaning in the code, the help text, `README.md` and `CLAUDE.md`: a restore was accepted whose bytes or access settings do not match the backup. It is now the only outcome that can leave an unproven item behind (#7, #15).
+- Exit 4 has one meaning in the code, the help text, `README.md` and `CLAUDE.md`: a restore was accepted whose bytes or access settings do not match the backup. Its remedy is to inspect, never a blind `unset`; the own-rotation path no longer hands one out either (#7, #15).
 
 - A restore that could not be read back says which remedy fits: two matching items are not resolved by unlocking the keychain, and are no longer told to be (#15).
 

@@ -25,6 +25,10 @@ enum RestoreLoss: Equatable {
     /// An item was already at the destination, so the backup was not written:
     /// restoring must never overwrite whatever is there now.
     case destinationOccupied
+    /// The destination could not be inspected (lookup error or ambiguous match),
+    /// so nothing was written: refusing on an unknown state is not the same as
+    /// having seen an item there.
+    case destinationUnknown
 }
 
 /// What happened to a rotation's previous value after it was put back.
@@ -99,6 +103,8 @@ enum ExplicitRestoreOutcome {
     case restored, unverified, mismatch, preparationFailed, failed(OSStatus)
     /// An item was already at the destination; the backup was not written.
     case destinationOccupied
+    /// The destination could not be inspected; the backup was not written.
+    case destinationUnknown
     /// No restore was tried: the keychain had accepted the new value, and after
     /// that this command does not put a backup back.
     case notAttempted
@@ -125,6 +131,10 @@ enum KeychainError: Error, LocalizedError {
     /// The caller confirmed the store against a stated slot state ("new item" /
     /// "replaces the existing value") and the write-time inspection disagrees.
     case destinationChanged(service: String, account: String, expectedExisting: Bool)
+    /// The dialog described the destination's access class (own / allow-all /
+    /// foreign) and the user consented to replacing THAT; by write time it is a
+    /// different class. Consent does not carry over (#7 L1).
+    case destinationClassChanged(service: String, account: String)
     /// The match is not a file-keychain item (data-protection / iCloud keychain):
     /// che-keychain can neither inspect its ACL nor delete it by reference.
     case unsupportedItem(service: String, account: String)
@@ -153,7 +163,7 @@ enum KeychainError: Error, LocalizedError {
         case .replacementBackupUnavailable, .replacementChanged, .replacementProbeCleanupFailed: return 1
         case .storedValueMismatch(_, _, _, let cleanup): return cleanup.exitCode
         case .replaceFailed(_, _, _, let restore):       return restore.exitCode
-        case .osStatus, .notFound, .foreignOwned, .aclWideningRefused, .destinationChanged, .unsupportedItem, .ambiguous, .unattributable, .undeletable, .emptyValue:
+        case .osStatus, .notFound, .foreignOwned, .aclWideningRefused, .destinationChanged, .destinationClassChanged, .unsupportedItem, .ambiguous, .unattributable, .undeletable, .emptyValue:
             return 1   // exhaustive on purpose: a new case must choose
         }
     }
@@ -183,7 +193,13 @@ enum KeychainError: Error, LocalizedError {
             }
             return msg
         case .replacementBackupUnavailable(let svc, let acct):
-            return "cannot establish a restorable noninteractive backup of \(sanitize(svc))/\(sanitize(acct)) — no deletion was attempted on the original item. Inspect its access settings with the original trusted application before retrying."
+            return """
+            cannot establish a restorable noninteractive backup of \(sanitize(svc))/\(sanitize(acct)) — no deletion was attempted on the original item.
+              The old value must be readable without a prompt so it can be put back if the add fails. An item created by another tool \
+            (for example `security add-generic-password`, whose items carry the partition `apple-tool:`) cannot be read that way even \
+            when its application ACL allows every application, so `--replace` cannot take it. To replace such an item: \
+            `security delete-generic-password --service \(shellQuote(svc)) --account \(shellQuote(acct))` (this prompts for the login keychain password), then `che-keychain set`.
+            """
         case .replacementProbeCleanupFailed(let probeService):
             return "the nonsecret recovery probe could not be removed: service=\(probeService), account=probe. The original item was not deleted; inspect the probe in Keychain Access before retrying."
         case .replacementChanged(let svc, let acct):
@@ -197,7 +213,8 @@ enum KeychainError: Error, LocalizedError {
             case .preparationFailed: outcome = "The original access settings could NOT be prepared for restoration; the destination's state is unknown. Inspect it before retrying."
             case .failed(let st): outcome = "The original item could NOT be restored (OSStatus \(st)); the destination's state is unknown. Inspect it before retrying."
             case .destinationOccupied: outcome = "An item was already at the destination, so the backup was NOT written over it. Inspect what is there in Keychain Access before taking further action."
-            case .notAttempted: outcome = "The keychain had already accepted the new value, so no backup was put back: after a successful write this command cannot show that what is at the destination is its own, and does not act on it. Inspect the destination before retrying."
+            case .destinationUnknown: outcome = "The destination could not be inspected, so the backup was NOT written (restoring blind could write over something). Its state is unknown; inspect it in Keychain Access before taking further action."
+            case .notAttempted: outcome = "The PREVIOUS item was deleted for the replace and has NOT been put back; the keychain accepted the new value, but nothing can now be found at the destination. After a successful write this command does not restore a backup (it cannot show that what is at the destination is its own). The destination is EMPTY as far as this command can see: store the secret again."
             }
             return "explicit replacement of \(sanitize(svc))/\(sanitize(acct)) failed: \(detail).\n  \(outcome)"
         case .notFound: return "keychain item not found"
@@ -269,6 +286,8 @@ enum KeychainError: Error, LocalizedError {
             """
         case .emptyValue(let svc, let acct):
             return "refusing to store an empty (or whitespace-only) value for \(sanitize(svc))/\(sanitize(acct)) — nothing was written."
+        case .destinationClassChanged(let svc, let acct):
+            return "the access class of \(sanitize(svc))/\(sanitize(acct)) changed after the dialog described it — nothing was written. The consent given was for the item the dialog showed; run the command again to see the current one."
         case .destinationChanged(let svc, let acct, let expected):
             return expected
                 ? "the dialog said an item exists at \(sanitize(svc))/\(sanitize(acct)) and would be replaced, but none exists now — nothing was written. Retry."
@@ -328,7 +347,10 @@ enum KeychainError: Error, LocalizedError {
                     : "the read-back could not be performed (keychain locked, or a prompt would have been needed) — once the keychain is unlocked, read it with the program that uses it, or store it again"
                 outcome = "The previous value was re-added as a prompt-on-read item (the keychain accepted it) but could not be read back to prove it: \(how)."
             case .mismatch(let why):
-                outcome = "The previous value was re-added but reads back \(why.rawValue) — the slot holds an UNVERIFIED item: `che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))`, then store the secret again."
+                // No `unset` here: the re-add was by name and so was the read-back,
+                // so the item that reads back wrong cannot be shown to be the one
+                // this command put there (#7 H2 applies to advice as well as code).
+                outcome = "The previous value was re-added but reads back \(why.rawValue) — the destination holds an item this command cannot prove is its restore. Inspect it in Keychain Access before taking further action."
             case .lost(let loss):
                 let why: String
                 switch loss {
@@ -337,11 +359,14 @@ enum KeychainError: Error, LocalizedError {
                 case .readdFailed(let rs): why = "re-add failed: OSStatus \(rs)"
                 case .readdVanished:      why = "the keychain accepted the re-add, yet no item exists afterwards"
                 case .destinationOccupied: why = "an item was already at the destination and restoring must never write over it"
+                case .destinationUnknown:  why = "the destination could not be inspected, and restoring blind could write over something"
                 }
                 if case .readdFailed = loss {
                     outcome = "The previous item could NOT be restored (\(why)); the destination's state is unknown. Inspect it before retrying."
                 } else if case .destinationOccupied = loss {
                     outcome = "The previous item was NOT restored (\(why)). Whatever is at \(sanitize(svc))/\(sanitize(acct)) now was left untouched; inspect it in Keychain Access before taking further action."
+                } else if case .destinationUnknown = loss {
+                    outcome = "The previous item was NOT restored (\(why)); the destination's state is unknown. Inspect it in Keychain Access before taking further action."
                 } else {
                     outcome = "The previous item could NOT be restored (\(why)) — \(sanitize(svc))/\(sanitize(acct)) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
                 }
@@ -389,9 +414,12 @@ enum KeychainStore {
         /// Every decrypt entry names applications, and every one of them is
         /// this binary's real path.
         case own
-        /// Some decrypt entry is "allow all applications" (alone or mixed with
-        /// application lists) — the shape `--daemon` writes, but also
-        /// `security add-generic-password -A`. No owner identity exists for
+        /// Some entry that can reveal the secret is "allow all applications" and
+        /// no such entry names another application — the shape `--daemon`
+        /// writes, but also `security add-generic-password -A`. An allow-all
+        /// entry mixed with a FOREIGN application classifies `.foreign` (that
+        /// rule wins); whether an allow-all entry exists at all is reported
+        /// separately as `Found.allowAllEntry`. No owner identity exists for
         /// such items (labels are forgeable).
         case allowAll
         /// Not a file-keychain item; ACL not inspectable, not deletable by us.
@@ -427,7 +455,10 @@ enum KeychainStore {
     /// Refuse-before-typing check: throws exactly the refusal `save` would throw
     /// (foreign / unattributable / ambiguous), without writing anything.
     /// `set` and `set-pair` run it for every account before the dialog, so a
-    /// refusal is never raised after a secret was typed or partially stored.
+    /// policy refusal is never raised after a secret was typed or partially
+    /// stored. With `allowReplacement` the backup and rehearsal still run after
+    /// the dialog, so `replacementBackupUnavailable` / `replacementChanged` can
+    /// follow a typed secret; they leave the original item untouched.
     @discardableResult
     static func preflight(service: String, accounts: [String], allowReplacement: Bool = false) throws -> [String: Bool] {
         var states: [String: Bool] = [:]
@@ -508,7 +539,7 @@ enum KeychainStore {
     /// "new item" (false) or "replaces the existing value" (true); if the
     /// write-time inspection disagrees, nothing is written.
     @discardableResult
-    static func save(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, allowReplacement: Bool = false) throws -> Existing {
+    static func save(service: String, account: String, value: String, daemon: Bool = false, mayWidenExistingACL: Bool = true, expectingExisting: Bool? = nil, allowReplacement: Bool = false, expectedClass: Existing? = nil) throws -> Existing {
         // Empty or whitespace-only is refused for EVERY caller (set's three
         // sources and set-pair): such an item looks stored but cannot
         // authenticate and blocks the next write — the #6 failure class. The
@@ -522,6 +553,9 @@ enum KeychainStore {
             let exists: Bool
             if case .none = found.existing { exists = false } else { exists = true }
             guard exists == expected else { throw KeychainError.destinationChanged(service: service, account: account, expectedExisting: expected) }
+        }
+        if let expectedClass, found.existing != expectedClass {
+            throw KeychainError.destinationClassChanged(service: service, account: account)
         }
         if allowReplacement, found.existing != .none, found.existing != .unsupported, let item = found.item {
             // A cheap early refusal only: an ACL carrying an allow-all entry is
@@ -607,14 +641,14 @@ enum KeychainStore {
         return try body()
     }
 
-    private struct ReadBack { let mismatch: MismatchReason?; let item: SecKeychainItem? }
+    private struct ReadBack { let mismatch: MismatchReason? }
 
     /// Post-write read-back (#6). Looks the item up with the same scope as
     /// `inspect` (synchronizable twins included) so that verification looks
     /// where the write went; exactly one file-keychain item must match.
     private static func readBack(service: String, account: String, expected: Data) -> ReadBack {
         #if DEBUG
-        if let forced = readBackReasonOverride?(service, account) { return ReadBack(mismatch: forced, item: nil) }
+        if let forced = readBackReasonOverride?(service, account) { return ReadBack(mismatch: forced) }
         #endif
         return withoutInteraction {
             let q: [String: Any] = [
@@ -627,18 +661,18 @@ enum KeychainStore {
             ]
             var out: CFTypeRef?
             let st = SecItemCopyMatching(q as CFDictionary, &out)
-            if st == errSecItemNotFound { return ReadBack(mismatch: .missing, item: nil) }
-            guard st == errSecSuccess, let refs = out as? [AnyObject] else { return ReadBack(mismatch: .unreadable, item: nil) }
-            if refs.isEmpty { return ReadBack(mismatch: .missing, item: nil) }
-            guard refs.count == 1 else { return ReadBack(mismatch: .ambiguous, item: nil) }
-            guard CFGetTypeID(refs[0]) == SecKeychainItemGetTypeID() else { return ReadBack(mismatch: .unreadable, item: nil) }
+            if st == errSecItemNotFound { return ReadBack(mismatch: .missing) }
+            guard st == errSecSuccess, let refs = out as? [AnyObject] else { return ReadBack(mismatch: .unreadable) }
+            if refs.isEmpty { return ReadBack(mismatch: .missing) }
+            guard refs.count == 1 else { return ReadBack(mismatch: .ambiguous) }
+            guard CFGetTypeID(refs[0]) == SecKeychainItemGetTypeID() else { return ReadBack(mismatch: .unreadable) }
             let item = refs[0] as! SecKeychainItem
             let data: Data?
             #if DEBUG
             if let o = readBackOverride {
                 // The seam replaces only the bytes read; the lookup stays real so
                 // cleanup operates on the actual item.
-                guard let d = o(service, account) else { return ReadBack(mismatch: .missing, item: item) }
+                guard let d = o(service, account) else { return ReadBack(mismatch: .missing) }
                 data = d
             } else {
                 data = readValue(of: item)
@@ -646,9 +680,9 @@ enum KeychainStore {
             #else
             data = readValue(of: item)
             #endif
-            guard let d = data else { return ReadBack(mismatch: .unreadable, item: item) }
-            if d.isEmpty { return ReadBack(mismatch: .empty, item: item) }
-            return ReadBack(mismatch: d == expected ? nil : .differs, item: item)
+            guard let d = data else { return ReadBack(mismatch: .unreadable) }
+            if d.isEmpty { return ReadBack(mismatch: .empty) }
+            return ReadBack(mismatch: d == expected ? nil : .differs)
         }
     }
 
@@ -801,7 +835,8 @@ enum KeychainStore {
             guard let access = try? rebuiltAccess(backup.access) else { return .preparationFailed }
             // Never write over whatever is at the destination now: the backup may
             // be older than an item another writer has since put there.
-            guard case .some(.none) = (try? inspect(service: service, account: account))?.existing else { return .destinationOccupied }
+            guard let seen = try? inspect(service: service, account: account) else { return .destinationUnknown }
+            guard case .none = seen.existing else { return .destinationOccupied }
             let status = addRaw(service: service, account: account, data: backup.data, access: access, keychain: backup.keychain)
             guard status == errSecSuccess else { return .failed(status) }
             guard let found = try? inspect(service: service, account: account), let item = found.item,
@@ -924,7 +959,8 @@ enum KeychainStore {
         guard let o = old else { return .lost(.previousUnreadable) }
         guard !o.isEmpty else { return .lost(.previousEmpty) }
         // Same rule as the explicit path: restore only into an empty destination.
-        guard case .some(.none) = (try? inspect(service: service, account: account))?.existing else { return .lost(.destinationOccupied) }
+        guard let seen = try? inspect(service: service, account: account) else { return .lost(.destinationUnknown) }
+        guard case .none = seen.existing else { return .lost(.destinationOccupied) }
         let st = addRaw(service: service, account: account, data: o, access: nil, keychain: keychain)
         guard st == errSecSuccess else { return .lost(.readdFailed(st)) }
         // Proof of failure vs inability to prove success — same split as the main path.
