@@ -12,7 +12,9 @@ enum MismatchReason: String {
     case ambiguous
 }
 
-/// Why a rotation's previous value could not be put back (the slot is empty).
+/// Why a rotation's previous value could not be put back. Most cases leave the
+/// slot empty; `readdFailed` and `destinationUnknown` leave it unknown and
+/// `destinationOccupied` leaves whatever another writer put there.
 enum RestoreLoss: Equatable {
     /// The previous value could not be read before the replace (locked keychain / prompt needed).
     case previousUnreadable
@@ -43,7 +45,7 @@ enum RestoreOutcome: Equatable {
     case restoredUnverified(MismatchReason)
     /// Re-added, but reads back empty / different / missing — an unverified item sits in the slot.
     case mismatch(MismatchReason)
-    /// Could not be put back at all; the slot is empty.
+    /// Could not be put back at all; `RestoreLoss` says why and what that leaves.
     case lost(RestoreLoss)
 
     /// The new value never landed (1), unless a restore was accepted whose bytes
@@ -99,6 +101,19 @@ enum NonEmptyStatus {
     }
 }
 
+/// Why an explicit replacement could not establish a restorable backup. Each
+/// case names what was actually observed, so the report never states a cause
+/// the code did not see (#7 G1/G2).
+enum BackupRefusal: Equatable {
+    /// The old value could not be read with prompts disabled.
+    case valueUnreadable
+    /// The value was read, but the item's access settings or keychain could not be.
+    case accessUnreadable
+    /// The value and access settings were read, but the policy could not be
+    /// rebuilt and reproduced in a nonsecret test item.
+    case policyNotReproducible
+}
+
 enum ExplicitRestoreOutcome {
     case restored, unverified, mismatch, preparationFailed, failed(OSStatus)
     /// An item was already at the destination; the backup was not written.
@@ -114,7 +129,7 @@ enum ExplicitRestoreOutcome {
 enum KeychainError: Error, LocalizedError {
     case osStatus(OSStatus, operation: String)
     case notFound
-    case replacementBackupUnavailable(service: String, account: String)
+    case replacementBackupUnavailable(service: String, account: String, cause: BackupRefusal)
     case replacementChanged(service: String, account: String)
     case replacementProbeCleanupFailed(probeService: String)
     case explicitReplacementFailed(service: String, account: String, detail: String, recovery: ExplicitRestoreOutcome)
@@ -192,13 +207,22 @@ enum KeychainError: Error, LocalizedError {
                 }
             }
             return msg
-        case .replacementBackupUnavailable(let svc, let acct):
+        case .replacementBackupUnavailable(let svc, let acct, let cause):
+            // Only what was observed, and no deletion advice: che-keychain holds no
+            // copy of this value, and deleting to bypass a failed backup is exactly
+            // what the backup exists to prevent (CLAUDE.md, README).
+            let observed: String
+            switch cause {
+            case .valueUnreadable:
+                observed = "its value cannot be read with prompts disabled, so there would be no copy to put back if the new value failed to land. Items created by `security add-generic-password` are one tested case of this"
+            case .accessUnreadable:
+                observed = "its value was read, but its access settings or keychain could not be, so the original access could not be restored if the new value failed to land"
+            case .policyNotReproducible:
+                observed = "its value and access settings were read, but that access policy could not be rebuilt and reproduced exactly in a nonsecret test item, so a restore could not be trusted to put it back as it was"
+            }
             return """
             cannot establish a restorable noninteractive backup of \(sanitize(svc))/\(sanitize(acct)) — no deletion was attempted on the original item.
-              The old value must be readable without a prompt so it can be put back if the add fails. An item created by another tool \
-            (for example `security add-generic-password`, whose items carry the partition `apple-tool:`) cannot be read that way even \
-            when its application ACL allows every application, so `--replace` cannot take it. To replace such an item: \
-            `security delete-generic-password --service \(shellQuote(svc)) --account \(shellQuote(acct))` (this prompts for the login keychain password), then `che-keychain set`.
+              \(observed). `--replace` cannot take this item; manage it with the application that created it.
             """
         case .replacementProbeCleanupFailed(let probeService):
             return "the nonsecret recovery probe could not be removed: service=\(probeService), account=probe. The original item was not deleted; inspect the probe in Keychain Access before retrying."
@@ -321,7 +345,7 @@ enum KeychainError: Error, LocalizedError {
                     ? "The new item was left in place but is UNVERIFIED; the previous value is GONE (it was deleted for the replace and nothing was put back). "
                     : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. ") + remedy(for: reason)
             case .removalNotAttempted(let why, let replaced):
-                done = "No removal was attempted: \(why.rawValue). The destination's current state is unknown. "
+                done = "Nothing was removed — \(why.rawValue) — so the item found there (\(what)) was LEFT IN PLACE. "
                     + (replaced ? "The previous item was deleted for the replace and has not been restored. " : "")
                     + "Inspect the destination in Keychain Access before taking further action."
             case .nothingStored(let replaced):
@@ -620,6 +644,9 @@ enum KeychainStore {
     /// window in which another writer can delete and recreate the destination
     /// (#7 H2).
     static var afterAddHook: ((String, String) -> Void)?
+    /// Makes `inspect` throw when it returns true, so a test can reach the
+    /// "destination could not be inspected" branches (#7 G3).
+    static var inspectErrorOverride: ((String, String) -> Bool)?
     /// The serialized access records currently at a destination, for tests that
     /// need to see what `replaceExplicitly` would judge.
     static func debugAccessRecords(service: String, account: String) -> [String]? {
@@ -746,18 +773,17 @@ enum KeychainStore {
     }
 
     private static func replacementBackup(_ item: SecKeychainItem, service: String, account: String) throws -> ReplacementBackup {
-        do {
-            return try withoutInteraction {
-                guard let data = readValue(of: item) else { throw KeychainError.notFound }
-                var access: SecAccess?; var keychain: SecKeychain?
-                guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess, let access,
-                      SecKeychainItemCopyKeychain(item, &keychain) == errSecSuccess, let keychain else {
-                    throw KeychainError.notFound
-                }
-                return ReplacementBackup(data: data, access: access, keychain: keychain, accessRecords: try accessRecords(access))
+        try withoutInteraction {
+            guard let data = readValue(of: item) else {
+                throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .valueUnreadable)
             }
-        } catch {
-            throw KeychainError.replacementBackupUnavailable(service: service, account: account)
+            var access: SecAccess?; var keychain: SecKeychain?
+            guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess, let access,
+                  SecKeychainItemCopyKeychain(item, &keychain) == errSecSuccess, let keychain,
+                  let records = try? accessRecords(access) else {
+                throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .accessUnreadable)
+            }
+            return ReplacementBackup(data: data, access: access, keychain: keychain, accessRecords: records)
         }
     }
 
@@ -808,7 +834,7 @@ enum KeychainStore {
         try withoutInteraction {
             let access: SecAccess
             do { access = try rebuiltAccess(backup.access) }
-            catch { throw KeychainError.replacementBackupUnavailable(service: service, account: account) }
+            catch { throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .policyNotReproducible) }
             let probeService = "che-keychain-recovery-probe-" + UUID().uuidString
             let probeData = Data("nonsecret recovery capability check".utf8)
             let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: probeService,
@@ -816,7 +842,7 @@ enum KeychainStore {
                 kSecUseKeychain as String: backup.keychain, kSecReturnRef as String: true]
             var result: CFTypeRef?
             let status = SecItemAdd(query as CFDictionary, &result)
-            guard status == errSecSuccess else { throw KeychainError.replacementBackupUnavailable(service: service, account: account) }
+            guard status == errSecSuccess else { throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .policyNotReproducible) }
             guard let result, CFGetTypeID(result) == SecKeychainItemGetTypeID() else {
                 throw KeychainError.replacementProbeCleanupFailed(probeService: probeService)
             }
@@ -826,7 +852,7 @@ enum KeychainStore {
             guard SecKeychainItemDelete(probe) == errSecSuccess else {
                 throw KeychainError.replacementProbeCleanupFailed(probeService: probeService)
             }
-            guard matches else { throw KeychainError.replacementBackupUnavailable(service: service, account: account) }
+            guard matches else { throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .policyNotReproducible) }
         }
     }
 
@@ -1098,6 +1124,11 @@ enum KeychainStore {
     }
 
     private static func inspect(service: String, account: String) throws -> Found {
+        #if DEBUG
+        if inspectErrorOverride?(service, account) == true {
+            throw KeychainError.osStatus(errSecInteractionNotAllowed, operation: "set (look up existing item) [test seam]")
+        }
+        #endif
         // Inspection never needs the user's approval; make sure it can never
         // block a headless caller on a SecurityAgent prompt either.
         var wasAllowed: DarwinBoolean = true

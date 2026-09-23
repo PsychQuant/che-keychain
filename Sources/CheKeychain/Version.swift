@@ -101,13 +101,15 @@ enum AppVersion {
       value is refused everywhere, set-pair included.
       Every store (set, all sources, and set-pair) is read back and compared,
       and the exit code reports the observed outcome:
-        1  an error: the new value is not proven to be at the destination, and
-           nothing was removed. The report says which of these the destination is
-           in: unchanged; holding a value that read back empty or different and
-           was LEFT IN PLACE (a name lookup cannot show it is this write's, so it
-           is not deleted); empty; holding the restored previous value (only after
-           a failed add, and only into an empty destination); or unknown. Inspect
-           the destination before deleting anything.
+        1  an error: the new value is not proven to be at the destination.
+           Nothing is removed after the keychain accepts a write; a rotation or
+           --replace does delete the PREVIOUS item before adding the new one. The
+           report says which of these the destination is in: unchanged; holding a
+           value that read back empty or different and was LEFT IN PLACE (a name
+           lookup cannot show it is this write's); empty, the previous item
+           having been deleted and not put back; holding the restored previous
+           value (only after a failed add, and only into an empty destination);
+           or unknown. Inspect the destination before deleting anything.
         3  the write was accepted but could not be verified (keychain locked, or
            the match was ambiguous); cleanup leaves the destination alone.
            Inspect ambiguous matches in Keychain Access; unlocking is not a remedy

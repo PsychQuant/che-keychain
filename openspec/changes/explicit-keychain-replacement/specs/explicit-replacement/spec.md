@@ -22,9 +22,13 @@ Before deleting an existing item, explicit replacement MUST obtain its bytes, or
 - **WHEN** the old item requires a prompt to read
 - **THEN** set --replace SHALL return 1 without deleting or modifying it
 
-#### Scenario: Item created by another tool
-- **WHEN** the destination was created by `security add-generic-password` (partition `apple-tool:`), with or without `-A`
-- **THEN** set --replace SHALL return 1 without deleting or modifying it, and the report SHALL say that the value cannot be read without the login-keychain password and SHALL name the replacement path (`security delete-generic-password`, then `che-keychain set`)
+#### Scenario: Old value not readable with prompts disabled
+- **WHEN** the destination's old value cannot be read with prompts disabled — for example an item created by `security add-generic-password`, with or without `-A`
+- **THEN** set --replace SHALL return 1 without deleting or modifying it, the report SHALL state that observed cause and no other, and the report SHALL NOT suggest deleting the item
+
+#### Scenario: Backup readable but policy not reproducible
+- **WHEN** the old value and access settings are readable but the access policy cannot be rebuilt and reproduced in a nonsecret test item
+- **THEN** set --replace SHALL return 1 without deleting or modifying it, and the report SHALL NOT claim the value was unreadable
 
 ### Requirement: Recovery with original access
 If adding the new value fails, the command SHALL attempt to restore the old bytes and original access settings in the original keychain. It SHALL verify both restored bytes and normalized ACL entries before reporting a verified restore. Restoration SHALL be attempted only into a destination observed to hold no item; if any item is present, the command SHALL leave it untouched and report that the backup was not restored. After the keychain accepts the new value, the command SHALL NOT restore a backup over the destination under any outcome.

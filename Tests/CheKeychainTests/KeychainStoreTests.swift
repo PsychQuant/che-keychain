@@ -375,6 +375,7 @@ final class KeychainStoreTests: XCTestCase {
         KeychainStore.addRawStatusOverride = nil
         KeychainStore.afterInspectHook = nil
         KeychainStore.afterAddHook = nil
+        KeychainStore.inspectErrorOverride = nil
     }
 
     /// The item reference currently carrying this service/account, or nil.
@@ -488,19 +489,23 @@ final class KeychainStoreTests: XCTestCase {
 
     // MARK: - #7 acceptance: a `security`-created item (F1)
 
-    func testASecurityCreatedItemIsRefusedCleanlyWithThePartitionRemedy() throws {
-        // #7 acceptance names `security`-created items. Such items carry the
-        // partition `apple-tool:`, so their value cannot be read without the
-        // login-keychain password even when the application ACL is allow-all —
-        // and a replacement needs a non-interactive backup. The refusal must be
-        // clean (nothing deleted) and must tell the user the way through.
+    func testASecurityCreatedItemIsRefusedCleanlyAndNothingIsSuggestedForDeletion() throws {
+        // #7 (narrowed 2026-09-22): an item whose old value cannot be read with
+        // prompts disabled cannot be backed up, so --replace refuses it. Items
+        // created by `security add-generic-password` are the tested example. The
+        // refusal names the observed cause and does NOT tell anyone to delete
+        // the item: che-keychain holds no copy of it, and the repo rule is never
+        // to suggest deletion to bypass a failed backup.
         for (account, allowAll) in [("secA", true), ("secP", false)] {
             try seedForeignItem(account: account, value: "old", allowAll: allowAll)
             XCTAssertThrowsError(try KeychainStore.save(service: service, account: account, value: "new",
                                                        daemon: allowAll, mayWidenExistingACL: false, allowReplacement: true)) { err in
-                guard case KeychainError.replacementBackupUnavailable = err else { return XCTFail("\(account): got \(err)") }
+                guard case KeychainError.replacementBackupUnavailable(_, _, .valueUnreadable) = err else { return XCTFail("\(account): got \(err)") }
                 let msg = (err as? LocalizedError)?.errorDescription ?? ""
-                XCTAssertTrue(msg.contains("apple-tool:") && msg.contains("security delete-generic-password"), msg)
+                XCTAssertTrue(msg.contains("cannot be read with prompts disabled"), msg)
+                XCTAssertFalse(msg.lowercased().contains("delete-generic-password"), msg)
+                XCTAssertFalse(msg.contains("unset"), msg)
+                XCTAssertFalse(msg.lowercased().contains("prompt for the login"), "no unobserved claims: \(msg)")
             }
             XCTAssertEqual(try readForeign(account: account), "old", "\(account): the original item is untouched")
         }
@@ -719,7 +724,7 @@ final class KeychainStoreTests: XCTestCase {
         // the documentation can state it without qualification (#7 M2 / #15).
         XCTAssertEqual(KeychainError.explicitReplacementFailed(service: "s", account: "a", detail: "d", recovery: .mismatch).exitCode, 4)
         XCTAssertEqual(KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .mismatch(.differs)).exitCode, 4)
-        for recovery: ExplicitRestoreOutcome in [.restored, .unverified, .preparationFailed, .failed(-25308), .destinationOccupied, .notAttempted] {
+        for recovery: ExplicitRestoreOutcome in [.restored, .unverified, .preparationFailed, .failed(-25308), .destinationOccupied, .destinationUnknown, .notAttempted] {
             XCTAssertEqual(KeychainError.explicitReplacementFailed(service: "s", account: "a", detail: "d", recovery: recovery).exitCode, 1, "\(recovery)")
         }
     }
@@ -744,6 +749,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertTrue(msg(.readdFailed(-25293)).contains("re-add") && msg(.readdFailed(-25293)).contains("-25293"))
         XCTAssertTrue(msg(.readdVanished).contains("accepted the re-add") && msg(.readdVanished).contains("no item exists"))
         XCTAssertTrue(msg(.destinationOccupied).contains("never write over it") && msg(.destinationOccupied).contains("left untouched"))
+        XCTAssertTrue(msg(.destinationUnknown).contains("could not be inspected") && msg(.destinationUnknown).contains("unknown"))
     }
 
     func testSaveWithoutACLWideningRefusesToTurnAnOwnItemDaemonReadable() throws {
@@ -800,7 +806,10 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationChangeACL] as CFArray), errSecSuccess)
         XCTAssertEqual(SecKeychainItemSetAccess(item, access!), errSecSuccess)
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
+            guard case KeychainError.replacementBackupUnavailable(_, _, .policyNotReproducible) = error else { return XCTFail("got \(error)") }
             XCTAssertTrue(error.localizedDescription.contains("no deletion was attempted"), error.localizedDescription)
+            // The value WAS readable here; the message must not say otherwise (G2).
+            XCTAssertFalse(error.localizedDescription.contains("cannot be read with prompts disabled"), error.localizedDescription)
         }
         XCTAssertEqual(try readOwn(account: "d"), "old")
     }
@@ -848,6 +857,65 @@ final class KeychainStoreTests: XCTestCase {
         resetSeams()
         XCTAssertEqual(try readOwn(account: "d"), "old")
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+    }
+
+    // MARK: - Round-3 behaviours (G3)
+
+    func testReplaceConsentIsForTheAccessClassTheDialogDescribed() throws {
+        // The dialog described an allow-all item; by write time it is own.
+        try KeychainStore.save(service: service, account: "c", value: "v1")
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "c", value: "v2",
+                                                   allowReplacement: true, expectedClass: .allowAll)) { err in
+            guard case KeychainError.destinationClassChanged = err else { return XCTFail("got \(err)") }
+            XCTAssertEqual((err as? KeychainError)?.exitCode, 1)
+            XCTAssertTrue(err.localizedDescription.contains("nothing was written"), err.localizedDescription)
+        }
+        XCTAssertEqual(try readOwn(account: "c"), "v1", "the item is untouched")
+        // The same class passes.
+        try KeychainStore.save(service: service, account: "c", value: "v2", allowReplacement: true, expectedClass: .own)
+        XCTAssertEqual(try readOwn(account: "c"), "v2")
+    }
+
+    func testARestoreThatCannotInspectTheDestinationIsUnknownNotOccupied() throws {
+        defer { resetSeams() }
+        // Own rotation: the new add fails, then the destination cannot be inspected.
+        try KeychainStore.save(service: service, account: "own", value: "v1")
+        var failInspect = false
+        KeychainStore.addRawStatusOverride = { _, _, data in
+            guard data == Data("v2".utf8) else { return nil }
+            failInspect = true; return errSecNotAvailable
+        }
+        KeychainStore.inspectErrorOverride = { _, _ in failInspect }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "own", value: "v2")) { err in
+            guard case KeychainError.replaceFailed(_, _, _, .lost(.destinationUnknown)) = err else { return XCTFail("got \(err)") }
+            let msg = err.localizedDescription
+            XCTAssertTrue(msg.contains("could not be inspected") && msg.contains("unknown"), msg)
+            XCTAssertFalse(msg.contains("already at the destination"), "nothing was observed there: \(msg)")
+        }
+        resetSeams()
+        // Explicit path, same shape.
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        failInspect = false
+        KeychainStore.addRawStatusOverride = { _, _, data in
+            guard data == Data("new".utf8) else { return nil }
+            failInspect = true; return errSecNotAvailable
+        }
+        KeychainStore.inspectErrorOverride = { _, _ in failInspect }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { err in
+            guard case KeychainError.explicitReplacementFailed(_, _, _, .destinationUnknown) = err else { return XCTFail("got \(err)") }
+            XCTAssertTrue(err.localizedDescription.contains("could not be inspected"), err.localizedDescription)
+        }
+    }
+
+    func testExplicitReplaceWhoseNewValueVanishesSaysThePreviousItemIsGone() throws {
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
+        KeychainStore.readBackOverride = { _, _ in nil }   // read-back finds nothing
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { err in
+            guard case KeychainError.explicitReplacementFailed(_, _, _, .notAttempted) = err else { return XCTFail("got \(err)") }
+            let msg = err.localizedDescription
+            XCTAssertTrue(msg.contains("PREVIOUS item was deleted") && msg.contains("NOT been put back"), msg)
+        }
     }
 
     func testExplicitReplaceDoesNotClaimRecoveryWhenRestoringAlsoFails() throws {

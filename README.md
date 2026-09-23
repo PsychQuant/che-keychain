@@ -53,9 +53,10 @@ printf '%s\n' "$TOKEN" | che-keychain set --service my-api --account token --std
 
 # Every store (set-pair included) is read back and compared; an empty or
 # whitespace-only value is refused. The exit code says whether the NEW value
-# landed: 1 = no (nothing is removed; the report says whether the destination
-# is unchanged, holds a value that read back wrong and was left in place, is
-# empty, holds the restored previous value, or is unknown),
+# landed: 1 = no (nothing is removed after the write is accepted, though a
+# rotation deleted the previous item first; the report says whether the
+# destination is unchanged, holds a value that read back wrong and was left in
+# place, is empty, holds the restored previous value, or is unknown),
 # 3 = it is in the slot but could not be verified (locked keychain), 4 = a
 # restore did not match the backup — inspect the destination before retrying.
 
@@ -67,7 +68,7 @@ che-keychain unset --service my-api --account token
 che-keychain unset --service my-api                 # removes all accounts under service
 ```
 
-Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" — nothing is removed; the message says whether the slot is unchanged, holds a value that read back empty or different and was left in place (a name lookup cannot show it is this write's), is empty, holds the restored previous value (only after a failed add, only into an empty slot), or could not be determined · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item that is not the one that was backed up; inspect it in Keychain Access before retrying, and do not remove it on this report alone; for `set-pair`, `3`/`4` refer to the account named in the message. `has` without `--non-empty`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
+Exit codes for `set` / `set-pair`: `0` stored and verified · `1` any other error, including "the new value did not land" — nothing is removed after the keychain accepts the write (a rotation or `--replace` has already deleted the previous item before adding); the message says whether the slot is unchanged, holds a value that read back empty or different and was left in place (a name lookup cannot show it is this write's), is empty, holds the restored previous value (only after a failed add, only into an empty slot), or could not be determined · `2` user cancelled · `3` write accepted but unverified (cleanup leaves the destination alone) · `4` a restore was accepted whose bytes or access settings do not match the backup — the destination holds an item that is not the one that was backed up; inspect it in Keychain Access before retrying, and do not remove it on this report alone; for `set-pair`, `3`/`4` refer to the account named in the message. `has` without `--non-empty`: `0` present, `1` absent. `unset`: `0`, or `1` when some match could not be removed.
 
 Dialog labels only affect the prompt: `set --label` sets both the dialog title and the input field's label. For `set-pair`, `--visible-label` and `--secure-label` label the two input fields, while `--title` sets the dialog title. None of these options sets the stored item's label in Keychain Access.
 
@@ -120,7 +121,7 @@ Without `--replace`, the existing refusal policy is unchanged. With it, the bina
 
 A failed replacement attempts to restore the original bytes and access policy in the original keychain and verifies both. Recovery can still fail or remain unverified; the error reports that state. Replacement is not atomic, does not preserve label/comment/date metadata, and does not guarantee zero downtime under arbitrary OS failures. Exit `0` requires a verified new value; failures retain the documented `1`/`3`/`4` outcomes. Success output identifies the previous ownership classification without revealing either value.
 
-`--replace --stdin --daemon` can rotate a backed-up allow-all item, but still refuses to widen an existing non-allow-all item's access without a dialog. `--replace --stdin` without `--daemon` replaces a readable foreign item with one only this binary can read — the other application's access to the old value ends, with no dialog, so use it only from automation the user trusts. `set-pair` does not support `--replace`. The flag is not a way to bypass unreadable-backup, ambiguous-match or unsupported-keychain refusals. In particular, items created by `security add-generic-password` carry the partition `apple-tool:` and cannot be read without the login-keychain password, so `--replace` refuses them (nothing is deleted) and names the way through: `security delete-generic-password`, then `che-keychain set`.
+`--replace --stdin --daemon` can rotate a backed-up allow-all item, but still refuses to widen an existing non-allow-all item's access without a dialog. `--replace --stdin` without `--daemon` replaces a readable foreign item with one only this binary can read — the other application's access to the old value ends, with no dialog, so use it only from automation the user trusts. `set-pair` does not support `--replace`. The flag is not a way to bypass unreadable-backup, ambiguous-match or unsupported-keychain refusals. In particular, `--replace` needs to read the old value with prompts disabled (it is the backup that goes back if the new value fails to land), so it refuses any item whose value cannot be read that way — items created by `security add-generic-password` are one tested case. Nothing is deleted; manage such an item with the application that created it. Do not delete it to get around the refusal: che-keychain holds no copy of its value.
 
 ## Moving or reinstalling the executable
 

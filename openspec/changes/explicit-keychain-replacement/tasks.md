@@ -35,4 +35,12 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 5.4 (F4) "The only outcome that leaves an unproven item behind" struck from README, help and CHANGELOG; design.md's exit-4 definition aligned (F17).
 - [x] 5.5 (F5) `--replace` consent is bound to the access class the dialog described: a class change by write time refuses (`destinationClassChanged`).
 - [x] 5.6 (F6/F9/F10/F13/F18) Messages say only what was observed: explicit-path `.missing` states the previous item is gone and not put back; a failed inspect during restore is `destinationUnknown`, not "an item was there"; `ReadBack.item` and stale comments removed; foreign+daemon dialog wording no longer contradicts itself.
-- [ ] 5.7 Full suite green, then `/idd-verify --pr 17` round 3 (Codex quota permitting).
+- [x] 5.7 Full suite green, then `/idd-verify --pr 17` round 3 — ran 2026-09-23 (Codex disabled by owner): FAIL; findings became section 6.
+
+## 6. Round 4 — round-3 verify findings
+
+- [x] 6.1 (G1/G2) `replacementBackupUnavailable` carries the observed cause (value unreadable / access unreadable / policy not reproducible); each message states that cause only and none suggests deleting the item. Tests assert the cause for the `security`-created case and the policy case, and assert no deletion advice.
+- [x] 6.2 (G3) Tests for `destinationClassChanged`, `destinationUnknown` on both restore paths (through a DEBUG inspect seam), and the explicit path's `.notAttempted` report.
+- [x] 6.3 (G8/G9/G10) Exit 1 says nothing is removed AFTER an accepted write and names the deleted-previous-item state; `removalNotAttempted` says the item was left in place; stale comments corrected.
+- [x] 6.4 (G4/G5/G6) The narrowed acceptance is stated by its real criterion; README, spec and design drop the deletion path and the unobserved password-prompt claim; CLAUDE.md warns agents about `--replace --stdin` and about deleting to bypass a refusal; errata posted on the #7 decision.
+- [ ] 6.5 Full suite green, then `/idd-verify --pr 17` round 4.
