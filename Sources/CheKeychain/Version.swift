@@ -66,9 +66,10 @@ enum AppVersion {
 
       Moving this executable to a different physical path makes its old
       items foreign to the new copy; a symlink resolves to the same path.
-      Keep using the original copy, or explicitly use the new copy with
-      --replace after establishing noninteractive read access. Failed backup
-      or policy reproduction leaves the original untouched. A matching
+      Keep using the original copy. --replace from the new copy needs to read
+      the old value with prompts disabled; for another path or build that is
+      expected to be refused (predicted, untested). A refusal leaves the
+      original untouched. A matching
       filename or signing team alone does not authorize replacement.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`
@@ -106,8 +107,8 @@ enum AppVersion {
            --replace does delete the PREVIOUS item before adding the new one. The
            report says which of these the destination is in: unchanged; holding a
            value that read back empty or different and was LEFT IN PLACE (a name
-           lookup cannot show it is this write's); empty, the previous item
-           having been deleted and not put back; holding the restored previous
+           lookup cannot show it is this write's); empty (on a rotation or
+           --replace, the previous item was deleted and not put back); holding the restored previous
            value (only after a failed add, and only into an empty destination);
            or unknown. Inspect the destination before deleting anything.
         3  the write was accepted but could not be verified (keychain locked, or
@@ -142,8 +143,9 @@ enum AppVersion {
 
       Exit codes (set, set-pair): 0 stored and verified · 1 any other error,
       including "the new value did not land" — the slot is unchanged, holds
-      the restored previous value, is empty, or has an unknown state;
-      the message says which · 2
+      a value that read back wrong and was left in place, holds the restored
+      previous value, is empty, or has an unknown state; the message says
+      which · 2
       cancelled · 3 write accepted but unverified · 4 restore does not match the
       backup (above). For
       set-pair, 3 and 4 refer to the account named in the message; the Note

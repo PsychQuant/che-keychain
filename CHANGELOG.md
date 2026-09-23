@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `set --replace` refuses an item whose old value cannot be read with prompts disabled — items created by `security add-generic-password` are the tested case — because there would be no backup to put back. The refusal names the cause it observed (value unreadable, access settings unreadable, or policy not reproducible) and never suggests deleting the item (#7).
+- `set --replace` refuses an item whose old value cannot be read with prompts disabled — items created by `security add-generic-password` are the tested case — because there would be no backup to put back. The refusal names the cause it observed (value unreadable, access settings unreadable, or policy not reproducible) and says che-keychain holds no copy of the old value. It offers `che-keychain unset` only as the user's decision to discard that value — the same remedy plain `set` gives (#7).
 
 - Nothing at a destination is deleted once the keychain has accepted the write. A name lookup finds whichever item currently carries that service and account, and an ACL says which binary may read an item rather than which write created it, so neither shows the item is this one's. A writer that deleted and recreated the destination between the add and the read-back previously had its credential deleted and an older backup written over the slot. A proven-bad value is now left in place and reported; a backup goes back only into a destination observed to hold no item, and only when the add itself failed (#7).
 

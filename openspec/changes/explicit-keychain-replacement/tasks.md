@@ -43,4 +43,13 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 6.2 (G3) Tests for `destinationClassChanged`, `destinationUnknown` on both restore paths (through a DEBUG inspect seam), and the explicit path's `.notAttempted` report.
 - [x] 6.3 (G8/G9/G10) Exit 1 says nothing is removed AFTER an accepted write and names the deleted-previous-item state; `removalNotAttempted` says the item was left in place; stale comments corrected.
 - [x] 6.4 (G4/G5/G6) The narrowed acceptance is stated by its real criterion; README, spec and design drop the deletion path and the unobserved password-prompt claim; CLAUDE.md warns agents about `--replace --stdin` and about deleting to bypass a refusal; errata posted on the #7 decision.
-- [ ] 6.5 Full suite green, then `/idd-verify --pr 17` round 4.
+- [x] 6.5 Full suite green, then `/idd-verify --pr 17` round 4 — ran 2026-09-23 (Codex off): FAIL, 0 HIGH; findings became section 7.
+
+## 7. Round 5 — docs-only, round-4 verify findings
+
+- [x] 7.1 (H1/H3) CLAUDE.md rule 7 now says an agent never deletes on its own initiative; the user decides whether the old value is expendable. Rule 5, the #9 paragraph, the refusal message, README and help agree. The refusal offers `che-keychain unset` framed as that decision, backed by `testUnsetRemovesItemsCreatedByOtherProgramsToo` and an observed run on both `security` shapes; "cannot take" (permanent) became "did not take".
+- [x] 7.2 (H2) CLAUDE.md states the `--replace --stdin --daemon` silent substitution and limits the Security-boundary claim to the typed value.
+- [x] 7.3 (H6) #9 docs (README, help, CLAUDE.md) no longer promise `--replace` from a new copy; they call the refusal a prediction, name the original copy as the path, and give the discard decision as the alternative.
+- [x] 7.4 (H4/H7/H8) `policyNotReproducible` wording covers a failed probe add; message-level test for all three causes (`accessUnreadable` has no reachable fixture); `removalNotAttempted` says "after the write"; help short summary and `empty` wording; doc comment.
+- [x] 7.5 (H5) G7 recorded as an accepted residual in design.md and filed as #22.
+- [ ] 7.6 Full suite green, then `/idd-verify --pr 17` round 5.

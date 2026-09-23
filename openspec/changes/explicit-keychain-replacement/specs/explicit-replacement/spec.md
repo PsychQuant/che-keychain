@@ -24,7 +24,7 @@ Before deleting an existing item, explicit replacement MUST obtain its bytes, or
 
 #### Scenario: Old value not readable with prompts disabled
 - **WHEN** the destination's old value cannot be read with prompts disabled — for example an item created by `security add-generic-password`, with or without `-A`
-- **THEN** set --replace SHALL return 1 without deleting or modifying it, the report SHALL state that observed cause and no other, and the report SHALL NOT suggest deleting the item
+- **THEN** set --replace SHALL return 1 without deleting or modifying it, the report SHALL state that observed cause and no other, SHALL say that che-keychain holds no copy of the old value, and SHALL present deleting the item only as the user's decision to discard it (`che-keychain unset`, then `set`), never as a way around the refusal
 
 #### Scenario: Backup readable but policy not reproducible
 - **WHEN** the old value and access settings are readable but the access policy cannot be rebuilt and reproduced in a nonsecret test item

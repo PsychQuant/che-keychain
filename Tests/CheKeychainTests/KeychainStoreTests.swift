@@ -15,8 +15,9 @@ final class KeychainStoreTests: XCTestCase {
 
     override func tearDown() {
         try? KeychainStore.unset(service: service)
-        // Foreign-owned items (seeded via `security`, see #5) can't be deleted by this
-        // binary — errSecInvalidOwnerEdit. Sweep them with the CLI that owns them.
+        // `unset` removes `security`-seeded items too (testUnsetRemovesItemsCreatedByOtherProgramsToo);
+        // the extra sweep with the CLI that created them is belt-and-braces for a test
+        // that failed before its own cleanup ran.
         // `security` deletes one matching item per call — loop until it reports none left.
         for _ in 0..<64 {
             let p = Process()
@@ -504,8 +505,13 @@ final class KeychainStoreTests: XCTestCase {
                 let msg = (err as? LocalizedError)?.errorDescription ?? ""
                 XCTAssertTrue(msg.contains("cannot be read with prompts disabled"), msg)
                 XCTAssertFalse(msg.lowercased().contains("delete-generic-password"), msg)
-                XCTAssertFalse(msg.contains("unset"), msg)
+                // The offered remedy is the same one plain `set` gives, and it works on
+                // this very item: see testUnsetRemovesItemsCreatedByOtherProgramsToo.
+                XCTAssertTrue(msg.contains("che-keychain unset --service '\(service)' --account '\(account)'"), msg)
+                XCTAssertTrue(msg.contains("permanently deletes"), "the cost is stated with the command: \(msg)")
                 XCTAssertFalse(msg.lowercased().contains("prompt for the login"), "no unobserved claims: \(msg)")
+                XCTAssertTrue(msg.contains("user's decision"), "deletion is framed as the user's call, not the caller's: \(msg)")
+                XCTAssertFalse(msg.contains("cannot take"), "a refusal now is not a permanent verdict: \(msg)")
             }
             XCTAssertEqual(try readForeign(account: account), "old", "\(account): the original item is untouched")
         }
@@ -857,6 +863,32 @@ final class KeychainStoreTests: XCTestCase {
         resetSeams()
         XCTAssertEqual(try readOwn(account: "d"), "old")
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+    }
+
+    func testEachBackupRefusalCauseStatesOnlyItsOwnObservation() {
+        // Message-level check for all three causes. `.accessUnreadable` has no
+        // reachable fixture (the value was readable but its access was not), so
+        // its wording is pinned here rather than through a real item.
+        func msg(_ c: BackupRefusal) -> String {
+            KeychainError.replacementBackupUnavailable(service: "s", account: "a", cause: c).errorDescription ?? ""
+        }
+        XCTAssertTrue(msg(.valueUnreadable).contains("cannot be read with prompts disabled"))
+        XCTAssertTrue(msg(.accessUnreadable).contains("access settings or keychain could not be"))
+        XCTAssertFalse(msg(.accessUnreadable).contains("cannot be read with prompts disabled"))
+        XCTAssertTrue(msg(.policyNotReproducible).contains("could not be created, or did not reproduce"))
+        for c: BackupRefusal in [.valueUnreadable, .accessUnreadable, .policyNotReproducible] {
+            let m = msg(c)
+            XCTAssertTrue(m.contains("no deletion was attempted") && m.contains("user's decision"), m)
+            XCTAssertTrue(m.contains("che-keychain unset --service 's' --account 'a'") && m.contains("permanently deletes"), m)
+            XCTAssertFalse(m.lowercased().contains("delete-generic-password"), m)
+            XCTAssertEqual(KeychainError.replacementBackupUnavailable(service: "s", account: "a", cause: c).exitCode, 1)
+        }
+    }
+
+    func testARefusalAfterARotationDoesNotContradictItself() {
+        let m = KeychainError.storedValueMismatch(service: "s", account: "a", reason: .differs,
+            cleanup: .removalNotAttempted(.writeNotAttributable, previousReplaced: true)).errorDescription ?? ""
+        XCTAssertTrue(m.contains("Nothing was removed after the write") && m.contains("previous item was deleted"), m)
     }
 
     // MARK: - Round-3 behaviours (G3)

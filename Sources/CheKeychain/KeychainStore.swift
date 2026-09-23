@@ -81,7 +81,8 @@ enum MismatchCleanup: Equatable {
     /// unverified new one now occupies the slot.
     case leftInPlace(previousReplaced: Bool)
     /// Cleanup was refused before any delete API was called (`CleanupRefusal` says
-    /// why). This is an unknown destination state, not a deletion failure.
+    /// why): the item found at the destination is left in place, and the report
+    /// says what it read back as. Not a deletion failure.
     case removalNotAttempted(CleanupRefusal, previousReplaced: Bool)
     /// Nothing to clean up: the write reported success but no item exists.
     /// `previousReplaced` = rotation: the previous value is gone too.
@@ -208,7 +209,9 @@ enum KeychainError: Error, LocalizedError {
             }
             return msg
         case .replacementBackupUnavailable(let svc, let acct, let cause):
-            // Only what was observed, and no deletion advice: che-keychain holds no
+            // Only what was observed. Deletion is offered solely as the user's decision to
+            // discard the old value (same remedy plain `set` gives) — never as a way around
+            // the refusal — because che-keychain holds no
             // copy of this value, and deleting to bypass a failed backup is exactly
             // what the backup exists to prevent (CLAUDE.md, README).
             let observed: String
@@ -218,11 +221,13 @@ enum KeychainError: Error, LocalizedError {
             case .accessUnreadable:
                 observed = "its value was read, but its access settings or keychain could not be, so the original access could not be restored if the new value failed to land"
             case .policyNotReproducible:
-                observed = "its value and access settings were read, but that access policy could not be rebuilt and reproduced exactly in a nonsecret test item, so a restore could not be trusted to put it back as it was"
+                observed = "its value and access settings were read, but a nonsecret test item carrying the rebuilt access policy could not be created, or did not reproduce that policy exactly, so a restore could not be trusted to put it back as it was"
             }
             return """
             cannot establish a restorable noninteractive backup of \(sanitize(svc))/\(sanitize(acct)) — no deletion was attempted on the original item.
-              \(observed). `--replace` cannot take this item; manage it with the application that created it.
+              \(observed). `--replace` did not take this item. Nothing was deleted, and che-keychain holds no copy of the old value, so whether to discard it is the user's decision, not the caller's.
+              If the user decides the old value is expendable — this permanently deletes it — remove it explicitly, then store again:
+                che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
             """
         case .replacementProbeCleanupFailed(let probeService):
             return "the nonsecret recovery probe could not be removed: service=\(probeService), account=probe. The original item was not deleted; inspect the probe in Keychain Access before retrying."
@@ -345,7 +350,7 @@ enum KeychainError: Error, LocalizedError {
                     ? "The new item was left in place but is UNVERIFIED; the previous value is GONE (it was deleted for the replace and nothing was put back). "
                     : "The item was left in place: nothing proves it is bad, and deleting it could destroy a good secret. ") + remedy(for: reason)
             case .removalNotAttempted(let why, let replaced):
-                done = "Nothing was removed — \(why.rawValue) — so the item found there (\(what)) was LEFT IN PLACE. "
+                done = "Nothing was removed after the write — \(why.rawValue) — so the item found there (\(what)) was LEFT IN PLACE. "
                     + (replaced ? "The previous item was deleted for the replace and has not been restored. " : "")
                     + "Inspect the destination in Keychain Access before taking further action."
             case .nothingStored(let replaced):
