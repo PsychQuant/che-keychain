@@ -221,12 +221,13 @@ enum KeychainError: Error, LocalizedError {
             case .accessUnreadable:
                 observed = "its value was read, but its access settings or keychain could not be, so the original access could not be restored if the new value failed to land"
             case .policyNotReproducible:
-                observed = "its value and access settings were read, but a nonsecret test item carrying the rebuilt access policy could not be created, or did not reproduce that policy exactly, so a restore could not be trusted to put it back as it was"
+                observed = "its value and access settings were read, but that access policy could not be rebuilt, or a nonsecret test item carrying the rebuilt policy could not be created or did not reproduce it exactly, so a restore could not be trusted to put it back as it was"
             }
             return """
             cannot establish a restorable noninteractive backup of \(sanitize(svc))/\(sanitize(acct)) — no deletion was attempted on the original item.
-              \(observed). `--replace` did not take this item. Nothing was deleted, and che-keychain holds no copy of the old value, so whether to discard it is the user's decision, not the caller's.
-              If the user decides the old value is expendable — this permanently deletes it — remove it explicitly, then store again:
+              \(observed). `--replace` did not take this item. Nothing was deleted, and che-keychain holds no copy of the old value.
+              To keep the old value, leave the item as it is and manage it with a program that can read it.
+              To discard it — the user's decision, not the caller's; do not run this without the user's explicit confirmation, it permanently deletes the old value — remove it, then store again:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
             """
         case .replacementProbeCleanupFailed(let probeService):

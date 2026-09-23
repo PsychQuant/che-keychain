@@ -39,10 +39,10 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 
 ## 6. Round 4 — round-3 verify findings
 
-- [x] 6.1 (G1/G2) `replacementBackupUnavailable` carries the observed cause (value unreadable / access unreadable / policy not reproducible); each message states that cause only and none suggests deleting the item. Tests assert the cause for the `security`-created case and the policy case, and assert no deletion advice.
+- [x] 6.1 (G1/G2) `replacementBackupUnavailable` carries the observed cause (value unreadable / access unreadable / policy not reproducible); each message states that cause only and none suggests deleting the item. Tests assert the cause for the `security`-created case and the policy case, and assert no deletion advice. _(Superseded in part by the 2026-09-24 decision on #7: deletion is offered as the user's decision; see 7.1 and 8.2.)_
 - [x] 6.2 (G3) Tests for `destinationClassChanged`, `destinationUnknown` on both restore paths (through a DEBUG inspect seam), and the explicit path's `.notAttempted` report.
 - [x] 6.3 (G8/G9/G10) Exit 1 says nothing is removed AFTER an accepted write and names the deleted-previous-item state; `removalNotAttempted` says the item was left in place; stale comments corrected.
-- [x] 6.4 (G4/G5/G6) The narrowed acceptance is stated by its real criterion; README, spec and design drop the deletion path and the unobserved password-prompt claim; CLAUDE.md warns agents about `--replace --stdin` and about deleting to bypass a refusal; errata posted on the #7 decision.
+- [x] 6.4 (G4/G5/G6) The narrowed acceptance is stated by its real criterion; README, spec and design drop the deletion path and the unobserved password-prompt claim; CLAUDE.md warns agents about `--replace --stdin` and about deleting to bypass a refusal; errata posted on the #7 decision. _(Superseded in part by the 2026-09-24 decision on #7: deletion is offered as the user's decision; see 7.1 and 8.2.)_
 - [x] 6.5 Full suite green, then `/idd-verify --pr 17` round 4 — ran 2026-09-23 (Codex off): FAIL, 0 HIGH; findings became section 7.
 
 ## 7. Round 5 — docs-only, round-4 verify findings
@@ -52,4 +52,12 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 7.3 (H6) #9 docs (README, help, CLAUDE.md) no longer promise `--replace` from a new copy; they call the refusal a prediction, name the original copy as the path, and give the discard decision as the alternative.
 - [x] 7.4 (H4/H7/H8) `policyNotReproducible` wording covers a failed probe add; message-level test for all three causes (`accessUnreadable` has no reachable fixture); `removalNotAttempted` says "after the write"; help short summary and `empty` wording; doc comment.
 - [x] 7.5 (H5) G7 recorded as an accepted residual in design.md and filed as #22.
-- [ ] 7.6 Full suite green, then `/idd-verify --pr 17` round 5.
+- [x] 7.6 Full suite green, then `/idd-verify --pr 17` round 5 — ran 2026-09-23 (Codex off): FAIL (1 HIGH: the #9 prediction was wrong, confirmed by an observed run); findings became section 8.
+
+## 8. Round 6 — round-5 verify findings
+
+- [x] 8.1 (I1/I2) #9 docs (README, help, CLAUDE.md, design.md) state the observed result: the same build at another path migrates with `--replace`; a differently signed copy is refused at the backup read. #9's option 3 holds; no narrowing of #9.
+- [x] 8.2 (I3/I4) Rule 7: the routine rotation for own `--daemon` items is `set --replace --daemon`; `unset` then `set` only after a backup refusal and the user's decision. The refusal message gives the keep option first and tells the caller not to run the `unset` line without the user's explicit confirmation; tests pin the order and the wording.
+- [x] 8.3 (I5) Decision on #7 (https://github.com/PsychQuant/che-keychain/issues/7#issuecomment-5798429935) records that deletion is the user's decision, superseding the errata's "no deletion advice".
+- [x] 8.4 (LOW) `policyNotReproducible` wording covers the rebuild failure; help summary names both remedies; the `unset` test covers the `-A` shape; stale test names and 6.1/6.4 notes updated.
+- [ ] 8.5 Full suite green, then `/idd-verify --pr 17` round 6.

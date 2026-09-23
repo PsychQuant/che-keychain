@@ -56,7 +56,9 @@ enum AppVersion {
       item. It requires a noninteractive backup of the old bytes and access
       settings. A temporary nonsecret probe must confirm that the original
       policy can be recreated and be removed before the original is deleted.
-      Unreadable or unreproducible backups are refused. Failed replacement
+      Unreadable or unreproducible backups are refused: nothing is deleted,
+      and the report says how to keep the old value or, if the user decides
+      it is expendable, how to discard it. Failed replacement
       attempts to restore and verify the old bytes and policy; the report
       distinguishes restored, unverified and failed recovery. This is not
       atomic and does not preserve label/comment/date metadata. No value is
@@ -66,10 +68,11 @@ enum AppVersion {
 
       Moving this executable to a different physical path makes its old
       items foreign to the new copy; a symlink resolves to the same path.
-      Keep using the original copy. --replace from the new copy needs to read
-      the old value with prompts disabled; for another path or build that is
-      expected to be refused (predicted, untested). A refusal leaves the
-      original untouched. A matching
+      Keep using the original copy, or run --replace from the new one: it
+      works when the new copy can read the old value with prompts disabled.
+      Observed: the same build copied to another path (same code signature)
+      migrates this way; a copy with a different code signature is refused at
+      the backup read and the original is left untouched. A matching
       filename or signing team alone does not authorize replacement.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`

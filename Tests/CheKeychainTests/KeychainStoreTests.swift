@@ -314,6 +314,11 @@ final class KeychainStoreTests: XCTestCase {
         try seedForeignItem(account: "theirs2", value: "z")
         try KeychainStore.unset(service: service, account: "theirs2")
         XCTAssertFalse(KeychainStore.has(service: service, account: "theirs2"))
+        // and the allow-all shape (`security -A`), the other one the --replace
+        // refusal can meet and whose remedy names `unset`
+        try seedForeignItem(account: "theirsA", value: "w", allowAll: true)
+        try KeychainStore.unset(service: service, account: "theirsA")
+        XCTAssertFalse(KeychainStore.has(service: service, account: "theirsA"))
     }
 
     func testARefusalToCleanUpNeverTellsTheUserToDeleteAnything() {
@@ -490,13 +495,13 @@ final class KeychainStoreTests: XCTestCase {
 
     // MARK: - #7 acceptance: a `security`-created item (F1)
 
-    func testASecurityCreatedItemIsRefusedCleanlyAndNothingIsSuggestedForDeletion() throws {
+    func testASecurityCreatedItemIsRefusedCleanlyAndDeletionIsOnlyTheUsersChoice() throws {
         // #7 (narrowed 2026-09-22): an item whose old value cannot be read with
         // prompts disabled cannot be backed up, so --replace refuses it. Items
         // created by `security add-generic-password` are the tested example. The
-        // refusal names the observed cause and does NOT tell anyone to delete
-        // the item: che-keychain holds no copy of it, and the repo rule is never
-        // to suggest deletion to bypass a failed backup.
+        // refusal names the observed cause, offers to keep the old value first,
+        // and presents deletion only as the user's decision (decision on #7,
+        // 2026-09-24): che-keychain holds no copy of the old value.
         for (account, allowAll) in [("secA", true), ("secP", false)] {
             try seedForeignItem(account: account, value: "old", allowAll: allowAll)
             XCTAssertThrowsError(try KeychainStore.save(service: service, account: account, value: "new",
@@ -511,6 +516,9 @@ final class KeychainStoreTests: XCTestCase {
                 XCTAssertTrue(msg.contains("permanently deletes"), "the cost is stated with the command: \(msg)")
                 XCTAssertFalse(msg.lowercased().contains("prompt for the login"), "no unobserved claims: \(msg)")
                 XCTAssertTrue(msg.contains("user's decision"), "deletion is framed as the user's call, not the caller's: \(msg)")
+                XCTAssertTrue(msg.contains("To keep the old value"), "the keep option comes first: \(msg)")
+                XCTAssertTrue(msg.contains("do not run this without the user's explicit confirmation"), msg)
+                XCTAssertLessThan(msg.range(of: "To keep the old value")!.lowerBound, msg.range(of: "che-keychain unset")!.lowerBound, "keep before discard")
                 XCTAssertFalse(msg.contains("cannot take"), "a refusal now is not a permanent verdict: \(msg)")
             }
             XCTAssertEqual(try readForeign(account: account), "old", "\(account): the original item is untouched")
@@ -865,7 +873,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
     }
 
-    func testEachBackupRefusalCauseStatesOnlyItsOwnObservation() {
+    func testEachBackupRefusalCauseNamesItsCauseAndTheSameRemedies() {
         // Message-level check for all three causes. `.accessUnreadable` has no
         // reachable fixture (the value was readable but its access was not), so
         // its wording is pinned here rather than through a real item.
@@ -875,11 +883,12 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertTrue(msg(.valueUnreadable).contains("cannot be read with prompts disabled"))
         XCTAssertTrue(msg(.accessUnreadable).contains("access settings or keychain could not be"))
         XCTAssertFalse(msg(.accessUnreadable).contains("cannot be read with prompts disabled"))
-        XCTAssertTrue(msg(.policyNotReproducible).contains("could not be created, or did not reproduce"))
+        XCTAssertTrue(msg(.policyNotReproducible).contains("policy could not be rebuilt, or a nonsecret test item"))
         for c: BackupRefusal in [.valueUnreadable, .accessUnreadable, .policyNotReproducible] {
             let m = msg(c)
             XCTAssertTrue(m.contains("no deletion was attempted") && m.contains("user's decision"), m)
             XCTAssertTrue(m.contains("che-keychain unset --service 's' --account 'a'") && m.contains("permanently deletes"), m)
+            XCTAssertTrue(m.contains("To keep the old value") && m.contains("explicit confirmation"), m)
             XCTAssertFalse(m.lowercased().contains("delete-generic-password"), m)
             XCTAssertEqual(KeychainError.replacementBackupUnavailable(service: "s", account: "a", cause: c).exitCode, 1)
         }
