@@ -38,9 +38,9 @@ enum PromptDialog {
         case .own:
             now = "a secret only this binary can read"
         case .allowAll(.plaintext):
-            now = "a secret ANY application can read"
+            now = "a secret ANY application can read at the application-ACL layer (other keychain authorization may still be required)"
         case .allowAll(.promptGated):
-            now = "a secret every application can read only after a confirmation prompt"
+            now = "a secret with an allow-all entry that carries a prompt selector (not counted as open to every application)"
         case .allowAll(.wrappedOnly):
             // Round-7 verify K1: every application may export it only wrapped
             // (still encrypted); the plaintext is not theirs.
@@ -53,9 +53,9 @@ enum PromptDialog {
                 ? "a secret nothing ties to this binary"
                 : "a secret whose access list trusts \(owners.count) application\(owners.count == 1 ? "" : "s") other than this binary"
             switch allowAll {
-            case .plaintext?:   what += " — and ANY application can read it (allow-all entry)"
+            case .plaintext?:   what += " — and ANY application can read it at the application-ACL layer (allow-all entry)"
             case .wrappedOnly?: what += " (every application may also export it wrapped, still encrypted — not the plaintext)"
-            case .promptGated?: what += " (every application may also read it, but only after a confirmation prompt)"
+            case .promptGated?: what += " (it also has an allow-all entry that carries a prompt selector — not counted as open)"
             case nil:           break
             }
             // With --daemon the new item is readable by every application, those

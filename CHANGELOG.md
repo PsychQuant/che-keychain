@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The "wipes" of the old value (the `--replace` backup and a plain rotation's copy, and those added during this cycle) are removed: the value arrives bridged from the Security framework's buffer, and zeroing it zeroed only a fresh copy while adding one more copy of the secret (observed). The README "Copies" row now says which buffer is wiped — the stdin buffer, which reserves room for the largest accepted value and is zeroed in place on every exit of the read (tested, including that the wipe does not zero a copy) — and that every other copy, the old value included, is released unwiped (#7, #15).
 
-- A password-gated "allow all applications" entry (a nonzero prompt selector) no longer counts as plaintext already open to every application: the non-interactive widening guard refuses to replace such an item with a no-prompt `--daemon` item, and the dialog and refusals describe it as readable only after a confirmation prompt (#7).
+- An "allow all applications" entry that carries a nonzero prompt selector no longer counts as plaintext already open to every application: what the selector requires of a reader is not verified, so the non-interactive widening guard fails closed on it. `--replace` refuses such items in any form, because a nonzero selector reads back byte-swapped and the access settings cannot be rebuilt exactly (observed); the refusal says so. Descriptions of allow-all access now say "at the application-ACL layer", since partition and keychain checks may still apply (#7).
 
 - The generic `set (…)` failure message no longer suggests `set --replace`: most of those failures happen while inspecting the item, and `--replace` inspects it the same way (#7).
 

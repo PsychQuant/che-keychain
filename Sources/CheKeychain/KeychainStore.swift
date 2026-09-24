@@ -202,8 +202,8 @@ enum KeychainError: Error, LocalizedError {
     /// an unreadable old value means a refusal, not a replace.
     private var replaceBackupTerms: String {
         "`--replace` holds a backup of the old value only while it runs — the old value is not kept afterwards — " +
-        "and proceeds only if this binary can read the old value without a prompt; otherwise it refuses and changes nothing " +
-        "(items created by `security add-generic-password` are one tested case of this). `set-pair` has no --replace: replace each account with `set`."
+        "and proceeds only if this binary can read the old value without a prompt and rebuild its access settings exactly; otherwise it refuses and changes nothing " +
+        "(items created by `security add-generic-password`, and items whose access list carries a prompt selector, are tested cases of this). `set-pair` has no --replace: replace each account with `set`."
     }
 
     var errorDescription: String? {
@@ -310,14 +310,14 @@ enum KeychainError: Error, LocalizedError {
             let daemonEffect: String
             switch scope {
             case .plaintext:
-                exposes = "That entry gives every application the plaintext; this is also what `--daemon` items look like."
+                exposes = "That entry gives every application the plaintext at the application-ACL layer (partition and keychain checks may still apply); this is also what `--daemon` items look like."
                 daemonEffect = "keeps the new value readable by every application (the rotation for a --daemon item)"
             case .wrappedOnly:
                 exposes = "That entry lets every application export the value only wrapped (still encrypted); the plaintext is not open to every application, so this is not what a `--daemon` item looks like."
                 daemonEffect = "makes the new value readable by every application — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
             case .promptGated:
-                exposes = "That entry lets every application read the value only after a confirmation prompt (a prompt selector), so the plaintext is not open to every application without it; this is not what a `--daemon` item looks like."
-                daemonEffect = "makes the new value readable by every application with no prompt — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
+                exposes = "That entry carries a nonzero prompt selector. che-keychain does not verify what the selector requires of a reader, so it does not count the plaintext as open to every application; this is not what a `--daemon` item looks like."
+                daemonEffect = ""
             }
             return """
             keychain item \(svc)/\(acct) already exists with an "allow all applications" entry, which carries \
@@ -327,8 +327,9 @@ enum KeychainError: Error, LocalizedError {
             so it is never a side effect of `set` — not even with --daemon.
               Replacing or discarding it is the user's decision, not the caller's: the item may be another program's, and every \
             program that reads it would get the new value. Do neither without the user's explicit say-so.
-              To replace it: `che-keychain set --replace --daemon` with the same service/account \(daemonEffect); \
-            `che-keychain set --replace` without --daemon makes it readable by this binary only. \(replaceBackupTerms)
+              \(scope == .promptGated
+                ? "`che-keychain set --replace` refuses this item, with or without --daemon: a nonzero selector reads back byte-swapped, so its access settings cannot be rebuilt exactly (observed), and nothing is deleted."
+                : "To replace it: `che-keychain set --replace --daemon` with the same service/account \(daemonEffect); `che-keychain set --replace` without --daemon makes it readable by this binary only. \(replaceBackupTerms)")
               To discard the old value instead — it permanently deletes the stored secret — remove it explicitly first, \
             then retry with the mode you want:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
@@ -528,9 +529,11 @@ enum KeychainStore {
         case plaintext
         /// export-wrapped only: every application may export the value encrypted.
         case wrappedOnly
-        /// A plaintext allow-all entry whose prompt selector is not 0 (e.g. it
-        /// asks for the keychain password): every application may read it, but
-        /// only after that confirmation — not "already open" (round-16 verify).
+        /// A plaintext allow-all entry whose prompt selector is not 0. What the
+        /// selector requires of a reader is NOT verified (round-17 verify: one
+        /// such fixture was read without a prompt), so it is simply not counted
+        /// as open — fail-closed. `--replace` cannot rebuild it: the selector
+        /// reads back byte-swapped (observed).
         case promptGated
     }
 
@@ -622,9 +625,9 @@ enum KeychainStore {
     /// refusal: described, and marked as not being an application.
     static func allowAllOwnerLabel(_ scope: AllowAllScope) -> String {
         switch scope {
-        case .plaintext:   return "any application (allow-all entry, plaintext)"
+        case .plaintext:   return "any application at the application-ACL layer (allow-all entry, plaintext)"
         case .wrappedOnly: return "any application, wrapped export only (allow-all entry; not the plaintext)"
-        case .promptGated: return "any application, only after a confirmation prompt (allow-all entry with a prompt selector)"
+        case .promptGated: return "any application, through an allow-all entry that carries a prompt selector (not counted as open)"
         }
     }
 

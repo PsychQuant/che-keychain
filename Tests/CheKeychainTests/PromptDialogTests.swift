@@ -72,7 +72,8 @@ final class PromptDialogTests: XCTestCase {
 
     func testAPromptGatedItemIsNotDescribedAsOpenAndItsDaemonReplacementWidens() {
         let gated = PromptDialog.warningText(daemon: true, replacing: .allowAll(.promptGated)) ?? ""
-        XCTAssertTrue(gated.contains("WIDENS") && gated.contains("confirmation prompt"), gated)
+        XCTAssertTrue(gated.contains("WIDENS") && gated.contains("prompt selector"), gated)
+        XCTAssertFalse(gated.contains("only after a confirmation prompt"), "what the selector requires is not verified: \(gated)")
         XCTAssertFalse(gated.contains("ANY application can read"), gated)
     }
 

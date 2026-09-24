@@ -574,7 +574,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try readOwn(account: "wrap"), "old", "the item is untouched")
     }
 
-    func testAPasswordGatedAllowAllEntryDoesNotMakeAnItemReadableByEverything() throws {
+    func testAPromptSelectorAllowAllEntryIsNotCountedAsOpen() throws {
         // Round-16 verify (Codex, HIGH): an allow-all decrypt entry whose prompt
         // selector asks for the password does not hand every application the
         // plaintext. Treating it as "already open" let a no-dialog --daemon
@@ -605,6 +605,15 @@ final class KeychainStoreTests: XCTestCase {
             }
         }
         XCTAssertEqual(try readOwn(account: "gate"), "old", "the item is untouched")
+        // Round-17 verify (observed): a nonzero selector reads back byte-swapped
+        // (1 → 256), so the access settings cannot be rebuilt exactly and even a
+        // dialog-consented --replace refuses the item at the rehearsal.
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "gate", value: "new", allowReplacement: true)) { err in
+            guard case KeychainError.replacementBackupUnavailable(_, _, .policyNotReproducible) = err else {
+                return XCTFail("got \(err)")
+            }
+        }
+        XCTAssertEqual(try readOwn(account: "gate"), "old", "still untouched")
     }
 
     func testAnAllowAllEntryMixedWithNamedApplicationsStillRotates() throws {
@@ -1186,6 +1195,16 @@ final class KeychainStoreTests: XCTestCase {
             let m = KeychainError.osStatus(errSecIO, operation: op).errorDescription ?? ""
             XCTAssertFalse(m.contains("--replace"), "\(op): \(m)")
         }
+    }
+
+    func testAPromptSelectorRefusalDoesNotOfferAReplaceThatCannotWork() {
+        // Round-17 verify: --replace cannot rebuild a nonzero selector, so the
+        // refusal for that class names the refusal instead of the replace path.
+        let m = KeychainError.unattributable(service: "s", account: "a", scope: .promptGated).errorDescription ?? ""
+        XCTAssertTrue(m.contains("refuses this item, with or without --daemon"), m)
+        XCTAssertFalse(m.contains("To replace it:"), m)
+        XCTAssertFalse(m.contains("only after a confirmation prompt"), m)
+        XCTAssertTrue(m.contains("che-keychain unset"), "discarding remains the user's option: \(m)")
     }
 
     func testDeletionAdviceInFallbacksIsFramedAsTheUsersDecision() {

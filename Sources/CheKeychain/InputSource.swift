@@ -169,10 +169,9 @@ enum InputSource {
             return (pfd.revents & Int16(POLLIN | POLLHUP)) != 0
         }
         var buffer = Data()
-        // Room for the largest accepted value up front, so the value is normally
-        // assembled in one storage block; storage outgrown past that is released
-        // unwiped, as are the `availableData` chunks appended here and any
-        // String/Data temporaries (README "Copies").
+        // Room for the largest accepted value up front. Storage outgrown past it is
+        // released unwiped, as are the `availableData` chunks appended here and
+        // any String/Data temporaries (README "Copies").
         buffer.reserveCapacity(stdinLimit + 1)
         // Registered before any read can fail: zero the buffer's final storage.
         defer {

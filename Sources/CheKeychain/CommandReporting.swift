@@ -19,9 +19,9 @@ func replacementEvidence(_ previous: KeychainStore.Existing) -> String {
     case .allowAll(let scope):
         let what: String
         switch scope {
-        case .plaintext:   what = "plaintext open to every application"
+        case .plaintext:   what = "plaintext open to every application at the application-ACL layer"
         case .wrappedOnly: what = "wrapped export only"
-        case .promptGated: what = "every application only after a confirmation prompt"
+        case .promptGated: what = "an allow-all entry with a prompt selector"
         }
         return "an allow-all item (owner not attributable; \(what))"
     case .foreign(let owners, let allowAll):
