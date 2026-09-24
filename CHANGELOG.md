@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - An "allow all applications" entry that carries a nonzero prompt selector no longer counts as plaintext already open to every application: what the selector requires of a reader is not verified, so the non-interactive widening guard fails closed on it. A stored prompt selector reads back byte-swapped (observed), and the recovery rebuild now writes it swapped back, so `--replace` reproduces such an entry exactly instead of refusing every item that has one. Descriptions of allow-all access now say "at the application-ACL layer", since partition and keychain checks may still apply (#7).
 
-- `set --replace` checks everything it must establish before deleting — a readable backup and a rehearsal that reproduces the access settings — in its preflight, before any dialog asks for a secret. An item the rehearsal would refuse (for example one whose partition list differs from what this binary creates) is refused up front instead of after the secret was typed (#7).
+- `set --replace` checks everything it must establish before deleting — a readable backup and a rehearsal that reproduces the access settings — in its preflight, before any dialog asks for a secret. An item whose access settings the rehearsal cannot reproduce is refused up front instead of after the secret was typed; refusals that depend on the item changing between the preflight and the write can still follow the dialog, and leave the item untouched (#7).
 
 - The generic `set (…)` failure message no longer suggests `set --replace`: most of those failures happen while inspecting the item, and `--replace` inspects it the same way (#7).
 

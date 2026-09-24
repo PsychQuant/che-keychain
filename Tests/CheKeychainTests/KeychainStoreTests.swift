@@ -611,6 +611,22 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
+    func testPreflightRehearsesAndLeavesNoProbeBehind() throws {
+        // Round-20 verify: exercise preflight's probe branch (add, compare, delete)
+        // on an item it accepts, then show no recovery probe remains. Attributes
+        // only are listed — no value is read.
+        try addSelectorFixture(account: "pre", selector: 0x0001)
+        XCTAssertEqual(try KeychainStore.preflight(service: service, accounts: ["pre"], allowReplacement: true), ["pre": true])
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecMatchLimit as String: kSecMatchLimitAll,
+                                kSecReturnAttributes as String: true]
+        var out: CFTypeRef?
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        XCTAssertTrue(st == errSecSuccess || st == errSecItemNotFound, "\(st)")
+        let services = ((out as? [[String: Any]]) ?? []).compactMap { $0[kSecAttrService as String] as? String }
+        XCTAssertFalse(services.contains { $0.hasPrefix("che-keychain-recovery-probe-") }, "a recovery probe was left behind")
+        XCTAssertEqual(try readOwn(account: "pre"), "old", "preflight wrote nothing to the item")
+    }
+
     func testAPromptSelectorAllowAllEntryIsNotCountedAsOpen() throws {
         // Round-16/17 verify: an allow-all decrypt entry with a nonzero prompt
         // selector is not counted as already open to every application — what the

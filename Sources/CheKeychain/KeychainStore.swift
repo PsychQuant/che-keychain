@@ -574,13 +574,17 @@ enum KeychainStore {
         }
     }
 
-    /// Refuse-before-typing check: throws exactly the refusal `save` would throw
-    /// (foreign / unattributable / ambiguous), without writing anything.
-    /// `set` and `set-pair` run it for every account before the dialog, so a
-    /// policy refusal is never raised after a secret was typed or partially
-    /// stored. With `allowReplacement` the backup and rehearsal still run after
-    /// the dialog, so `replacementBackupUnavailable` / `replacementChanged` can
-    /// follow a typed secret; they leave the original item untouched.
+    /// Refuse-before-typing check. `set` and `set-pair` run it for every account
+    /// before the dialog, so a policy refusal (foreign / unattributable /
+    /// ambiguous / unsupported) is never raised after a secret was typed or
+    /// partially stored; nothing is written. With `allowReplacement` it also
+    /// reads the backup and runs the recovery rehearsal (which adds and removes a
+    /// nonsecret probe item), so `replacementBackupUnavailable` and
+    /// `replacementProbeCleanupFailed` come before the dialog too. `save` runs
+    /// both again at write time, and refusals that depend on the item as it is
+    /// then — `replacementChanged`, `destinationClassChanged`, or a rehearsal
+    /// that fails because the item changed in between — can still follow a
+    /// typed secret; they leave the original item untouched.
     @discardableResult
     static func preflight(service: String, accounts: [String], allowReplacement: Bool = false) throws -> [String: Bool] {
         var states: [String: Bool] = [:]

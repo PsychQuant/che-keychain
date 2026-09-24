@@ -165,6 +165,12 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 
 ## 22. Round 20 — round-19 verify findings
 
-- [x] 22.1 (MEDIUM) `preflight(allowReplacement:)` runs the rehearsal as well as the backup read, so every refusal `--replace` can reach before deleting happens before a dialog. RED first (preflight did not throw on an unreproducible ACL).
+- [x] 22.1 (MEDIUM) `preflight(allowReplacement:)` runs the rehearsal as well as the backup read, so the refusals that depend only on the item as it is at preflight (backup readability, the rehearsal) happen before a dialog; refusals that depend on a change between preflight and write (`replacementChanged`, `destinationClassChanged`, a second rehearsal failing) can still follow it. RED first (preflight did not throw on an unreproducible ACL).
 - [x] 22.2 (LOW) The restore path is tested on nonzero selectors (0x0001 and 0x0011): a forced add failure restores `.restored` with access records equal to the original. The compensation comment states only what was observed and tested. The promptGated refusal test again pins the `unset` discard path. The bridging pin test and README are scoped to "while the returned CFData is still referenced". CLAUDE.md rule 6 states that the rehearsal requires matching partition lists. 20.2 marked superseded.
-- [ ] 22.3 Full suite green, then `/idd-verify --pr 17` round 20 (Codex on, all reviewers completing).
+- [x] 22.3 Full suite green (142/0), then `/idd-verify --pr 17` round 20 — ran 2026-09-24, all six completed: **PASS** (0 HIGH, 0 MEDIUM, 12 LOW, 8 INFO). The LOWs are in-scope fixes, section 23; no re-verify needed for them.
+
+## 23. Round 20 LOW fixes (after the passing verify)
+
+- [x] 23.1 The `preflight` doc comment matches round 20 (it reads the backup and rehearses, and lists what can still follow the dialog); 22.1 and the CHANGELOG are scoped the same way, and the round-20 implementation comment's broader sentence is corrected on #7.
+- [x] 23.2 `testPreflightRehearsesAndLeavesNoProbeBehind` runs preflight's probe branch on an item it accepts and shows no recovery probe remains (attributes only listed).
+- [x] 23.3 CLAUDE.md rule 6 states what the rehearsal compares (the rebuilt copy's partition list with the old item's) and no longer infers that partition readers are the same before and after; the CHANGELOG no longer gives an untested partition example.
