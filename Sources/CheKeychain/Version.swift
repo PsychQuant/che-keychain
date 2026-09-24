@@ -38,12 +38,14 @@ enum AppVersion {
       Plain `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
       binary and nothing else, the item is deleted by reference and re-created
       with the new value and the requested ACL (the old value is re-stored if
-      that fails). Anything else is REFUSED before the dialog opens, with the
-      exact `che-keychain unset` command to run first: an item whose ACL trusts
-      any other application (the `security` CLI, another copy of che-keychain at
-      a different path, an app you once clicked "Always Allow" for), or an item
-      with an "allow all applications" entry — which carries no owner identity
-      and is also what --daemon writes. To rotate a daemon item use
+      that fails). Anything else is REFUSED before the dialog opens: an item
+      whose ACL trusts any other application (the `security` CLI, another copy
+      of che-keychain at a different path, an app you once clicked "Always
+      Allow" for), or an item with an "allow all applications" entry — which
+      carries no owner identity and is also what --daemon writes. The refusal
+      names `set --replace` (backs up the old value until the new one is
+      verified; the old value is not kept afterwards) and `unset` (discards
+      it); both are the user's call, not the caller's. To rotate a daemon item use
       `set --replace --daemon`, which backs up the old value before replacing
       it (not atomic); `unset` then `set --daemon` discards the old value and
       is the user's call, not the caller's. che-keychain never overwrites an item whose ACL lets
@@ -93,8 +95,10 @@ enum AppVersion {
       from a pipe and stops at the line break without waiting for EOF; it shows
       NO dialog (the caller already holds the value — use it only from
       automation you trust) and prints the destination on stderr; with --daemon
-      it refuses, at write time, to replace an existing prompt-on-read item:
-      no existing secret's ACL is widened without a dialog. A new allow-all
+      it refuses, at write time, to replace an existing item whose plaintext
+      is not already open to every application (an allow-all entry that only
+      permits wrapped export does not count): no existing secret's plaintext
+      access is widened without a dialog. A new allow-all
       item can still be created — including after an `unset`, which is also
       dialog-free; that destroys the old secret rather than exposing it.
       Refused, never guessed: a terminal, invalid UTF-8, more than 64 KiB, no

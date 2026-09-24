@@ -170,7 +170,7 @@ final class KeychainStoreTests: XCTestCase {
         try seedForeignItem(account: "open", value: "stale", allowAll: true)
         try seedForeignItem(account: "forged", value: "stale", allowAll: true, label: "\(service)/forged")
         for acct in ["open", "forged"] {
-            XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: acct), .allowAll)
+            XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: acct), .allowAll(.plaintext))
             for daemon in [false, true] {
                 XCTAssertThrowsError(try KeychainStore.save(service: service, account: acct, value: "fresh", daemon: daemon)) { err in
                     guard case KeychainError.unattributable = err else { return XCTFail("\(acct) daemon=\(daemon): expected .unattributable, got \(err)") }
@@ -199,7 +199,7 @@ final class KeychainStoreTests: XCTestCase {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
             kSecAttrAccount as String: "mixed", kSecValueData as String: Data("v1".utf8), kSecAttrAccess as String: access!]
         XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "mixed"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "mixed"), .allowAll(.plaintext))
         for daemon in [false, true] {
             XCTAssertThrowsError(try KeychainStore.save(service: service, account: "mixed", value: "v2", daemon: daemon)) { err in
                 guard case KeychainError.unattributable = err else { return XCTFail("daemon=\(daemon): got \(err)") }
@@ -231,7 +231,7 @@ final class KeychainStoreTests: XCTestCase {
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         p.arguments = ["add-generic-password", "-s", service, "-a", "shared", "-w", "stale", "-T", "/usr/bin/security", "-T", me]
         try p.run(); p.waitUntilExit(); XCTAssertEqual(p.terminationStatus, 0)
-        guard case .foreign(let owners) = try KeychainStore.inspectExisting(service: service, account: "shared") else {
+        guard case .foreign(let owners, _) = try KeychainStore.inspectExisting(service: service, account: "shared") else {
             return XCTFail("co-trusted item must be foreign")
         }
         XCTAssertTrue(owners.contains("/usr/bin/security"), "owners=\(owners)")
@@ -244,7 +244,7 @@ final class KeychainStoreTests: XCTestCase {
         try KeychainStore.save(service: service, account: "d", value: "v1")
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .own)
         try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll(.plaintext))
         XCTAssertEqual(try readOwn(account: "d"), "v2")
     }
 
@@ -266,7 +266,7 @@ final class KeychainStoreTests: XCTestCase {
 
     func testSaveDaemonRefusesExistingDaemonItemAndNamesUnset() throws {
         // Our own daemon item is allow-all and therefore indistinguishable from
-        // anyone else's: re-setting it is `unset` then `set --daemon`.
+        // anyone else's: rotating it is `set --replace --daemon` (the user's call).
         try KeychainStore.save(service: service, account: "d", value: "v1", daemon: true)
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)) { err in
             guard case KeychainError.unattributable = err else { return XCTFail("expected .unattributable, got \(err)") }
@@ -275,7 +275,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try KeychainStore.unset(service: service, account: "d"), ["d"])
         try KeychainStore.save(service: service, account: "d", value: "v2", daemon: true)
         XCTAssertEqual(try readOwn(account: "d"), "v2", "the headline requirement: the value really changed")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll(.plaintext))
     }
 
     func testPreflightReturnsEachAccountsExistenceWithoutShortCircuiting() throws {
@@ -457,7 +457,7 @@ final class KeychainStoreTests: XCTestCase {
         // An allow-all item this binary owns, so the interleaving below can change
         // its access without needing anyone else's authorization.
         try KeychainStore.save(service: service, account: "rot", value: "v1", daemon: true)
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "rot"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "rot"), .allowAll(.plaintext))
         // After the classification and before the backup, another writer tightens
         // the ACL in place: the reference and the bytes do not change, so every
         // later equality check still passes and only the captured access differs.
@@ -547,6 +547,17 @@ final class KeychainStoreTests: XCTestCase {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
             kSecAttrAccount as String: "wrap", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
         XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        // Round-7 verify K1: the class itself says what the allow-all entry exposes,
+        // so every consumer (dialog, refusals, consent binding) sees the same fact.
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "wrap"), .allowAll(.wrappedOnly))
+        // The authoritative guard in `replaceExplicitly` judges the serialized
+        // records, a separate implementation from `classify`; exercise it directly
+        // on real captured records (round-7 verify, LOW).
+        let wrapRecords = try XCTUnwrap(KeychainStore.debugAccessRecords(service: service, account: "wrap"))
+        XCTAssertFalse(KeychainStore.hasAllowAllPlaintextEntry(wrapRecords), "\(wrapRecords)")
+        try KeychainStore.save(service: service, account: "daemonShape", value: "d", daemon: true)
+        let daemonRecords = try XCTUnwrap(KeychainStore.debugAccessRecords(service: service, account: "daemonShape"))
+        XCTAssertTrue(KeychainStore.hasAllowAllPlaintextEntry(daemonRecords), "\(daemonRecords)")
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "wrap", value: "new",
                                                    daemon: true, mayWidenExistingACL: false, allowReplacement: true)) { err in
             guard case KeychainError.aclWideningRefused = err else {
@@ -571,9 +582,12 @@ final class KeychainStoreTests: XCTestCase {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
             kSecAttrAccount as String: "mixed", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
         XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
-        guard case .foreign = try KeychainStore.inspectExisting(service: service, account: "mixed") else {
+        guard case .foreign(let owners, let allowAll) = try KeychainStore.inspectExisting(service: service, account: "mixed") else {
             return XCTFail("fixture should classify foreign — that is the point")
         }
+        XCTAssertTrue(owners.contains("/usr/bin/security"), "\(owners)")
+        XCTAssertFalse(owners.contains { $0.contains("allow-all") }, "an allow-all entry is not an application and is not counted as one: \(owners)")
+        XCTAssertEqual(allowAll, .plaintext)
         try KeychainStore.save(service: service, account: "mixed", value: "new",
                                daemon: true, mayWidenExistingACL: false, allowReplacement: true)
         XCTAssertEqual(try readOwn(account: "mixed"), "new")
@@ -811,29 +825,69 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own, "and still prompt-on-read")
         // A NEW item may still be created allow-all from stdin (documented decision).
         try KeychainStore.save(service: service, account: "fresh", value: "v", daemon: true, mayWidenExistingACL: false)
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "fresh"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "fresh"), .allowAll(.plaintext))
         // Same-mode rotation of an own item stays allowed without widening.
         try KeychainStore.save(service: service, account: "own", value: "v3", daemon: false, mayWidenExistingACL: false)
         XCTAssertEqual(try readOwn(account: "own"), "v3")
     }
 
     func testPlainSetRefusalsOfferTheBackedUpPathBeforeTheDiscardPath() {
-        // Round-6 verify J3: the refusals a user sees from plain `set` must agree
-        // with CLAUDE.md rule 7 — the backed-up `--replace` path first, `unset`
-        // only as the user's decision to discard. Each claim is backed:
-        // own --daemon rotation (testSaveWithoutACLWidening… / explicit replace
-        // tests), "Always Allow" → own (testExplicitReplaceHandlesReadableForeignACLWithFreshAccess),
-        // unreadable → refused unchanged (testASecurityCreatedItemIsRefusedCleanly…).
-        let unattr = KeychainError.unattributable(service: "s", account: "a").errorDescription ?? ""
-        let foreign = KeychainError.foreignOwned(service: "s", account: "a", owners: ["/usr/bin/security"], selfPath: "/me").errorDescription ?? ""
-        for (name, m, replaceCmd) in [("unattributable", unattr, "set --replace --daemon"), ("foreignOwned", foreign, "set --replace")] {
+        // Round-6 verify J3, tightened by round-7 K2/K3: every refusal that offers
+        // a way past it agrees with CLAUDE.md rules 6 and 7 — the backed-up
+        // `--replace` path before `unset`; BOTH framed as the user's decision
+        // (stated before either command, so neither reads as the caller's call);
+        // no claim that the old value is kept; and the refusal of unreadable old
+        // values stated wherever `--replace` is offered. Each claim is backed:
+        // own --daemon rotation (explicit replace tests), "Always Allow" → own
+        // (testExplicitReplaceHandlesReadableForeignACLWithFreshAccess), unreadable
+        // → refused unchanged (testASecurityCreatedItemIsRefusedCleanly…), backup
+        // zeroed after success (`replaceExplicitly`'s defer).
+        let cases: [(String, String, String)] = [
+            ("unattributable", KeychainError.unattributable(service: "s", account: "a", scope: .plaintext).errorDescription ?? "", "set --replace --daemon"),
+            ("unattributable(wrapped)", KeychainError.unattributable(service: "s", account: "a", scope: .wrappedOnly).errorDescription ?? "", "set --replace --daemon"),
+            ("foreignOwned", KeychainError.foreignOwned(service: "s", account: "a", owners: ["/usr/bin/security"], selfPath: "/me").errorDescription ?? "", "set --replace"),
+            ("aclWideningRefused", KeychainError.aclWideningRefused(service: "s", account: "a").errorDescription ?? "", "--replace"),
+        ]
+        for (name, m, replaceCmd) in cases {
             XCTAssertTrue(m.contains(replaceCmd), "\(name): \(m)")
-            XCTAssertTrue(m.contains("user's decision, not the caller's"), "\(name): \(m)")
-            if let rep = m.range(of: replaceCmd), let del = m.range(of: "che-keychain unset") {
-                XCTAssertLessThan(rep.lowerBound, del.lowerBound, "\(name): backed-up path before discard")
-            } else { XCTFail("\(name): both paths must be present: \(m)") }
+            XCTAssertFalse(m.contains("keeping a backup"), "\(name): the backup is not kept: \(m)")
+            XCTAssertTrue(m.contains("the old value is not kept afterwards"), "\(name): \(m)")
+            XCTAssertTrue(m.contains("refuses and changes nothing"), "\(name): the unreadable case is stated: \(m)")
+            XCTAssertFalse(m.contains("prompt-on-read item"), "\(name): not every refused item is prompt-on-read: \(m)")
+            guard let decision = m.range(of: "user's decision, not the caller's"),
+                  let rep = m.range(of: replaceCmd), let del = m.range(of: "che-keychain unset") else {
+                return XCTFail("\(name): the decision framing, the replace path and the discard path must all be present: \(m)")
+            }
+            XCTAssertLessThan(decision.lowerBound, rep.lowerBound, "\(name): the decision is stated before either command")
+            XCTAssertLessThan(rep.lowerBound, del.lowerBound, "\(name): backed-up path before discard")
         }
-        XCTAssertFalse(foreign.contains("the same `unset` then `set` re-creates"), foreign)
+        let unattr = cases[0].1, wrapped = cases[1].1
+        XCTAssertTrue(unattr.contains("without --daemon"), "both replacement forms are named: \(unattr)")
+        XCTAssertTrue(unattr.contains("every application the plaintext"), unattr)
+        XCTAssertFalse(wrapped.contains("decrypt entry"), "a wrapped-only entry is not a decrypt entry: \(wrapped)")
+        XCTAssertTrue(wrapped.contains("WIDENS"), "the widening a --daemon replace would cause is named: \(wrapped)")
+        XCTAssertFalse(cases[2].1.contains("the same `unset` then `set` re-creates"), cases[2].1)
+    }
+
+    func testDeletionAdviceInFallbacksIsFramedAsTheUsersDecision() {
+        // Round-7 verify (LOW): the two OSStatus fallbacks were the last places
+        // that advised deleting an item outright.
+        for (st, op) in [(errSecInvalidOwnerEdit, "set (delete)"), (errSecIO, "set (add)")] {
+            let m = KeychainError.osStatus(st, operation: op).errorDescription ?? ""
+            XCTAssertTrue(m.contains("user's decision, not the caller's"), m)
+            XCTAssertTrue(m.contains("permanently deletes"), m)
+        }
+    }
+
+    func testHelpGivesTheBackedUpRotationBeforeTheDiscardPath() {
+        // Round-7 verify (LOW): the help text's order was claimed but not pinned.
+        let h = AppVersion.helpMessage.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertFalse(h.contains("exact `che-keychain unset` command to run first"), "a refusal no longer leads with unset")
+        guard let rep = h.range(of: "use `set --replace --daemon`"), let del = h.range(of: "`unset` then `set --daemon`") else {
+            return XCTFail("both rotation paths must be in the help")
+        }
+        XCTAssertLessThan(rep.lowerBound, del.lowerBound)
+        XCTAssertTrue(h.contains("the user's call, not the caller's"))
     }
 
     func testForeignOwnedMessageQuotesTheRemedyAndCapsOwners() {
@@ -882,7 +936,7 @@ final class KeychainStoreTests: XCTestCase {
         try KeychainStore.save(service: service, account: "d", value: "old", daemon: true)
         try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, mayWidenExistingACL: false, allowReplacement: true)
         XCTAssertEqual(try readOwn(account: "d"), "new")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll(.plaintext))
     }
 
     func testExplicitReplaceRequiresReadableBackupBeforeDeletingForeignItem() throws {
@@ -920,7 +974,7 @@ final class KeychainStoreTests: XCTestCase {
         }
         resetSeams()
         XCTAssertEqual(try readOwn(account: "d"), "old")
-        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "d"), .allowAll(.plaintext))
     }
 
     func testEachBackupRefusalCauseNamesItsCauseAndTheSameRemedies() {
@@ -956,7 +1010,7 @@ final class KeychainStoreTests: XCTestCase {
         // The dialog described an allow-all item; by write time it is own.
         try KeychainStore.save(service: service, account: "c", value: "v1")
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "c", value: "v2",
-                                                   allowReplacement: true, expectedClass: .allowAll)) { err in
+                                                   allowReplacement: true, expectedClass: .allowAll(.plaintext))) { err in
             guard case KeychainError.destinationClassChanged = err else { return XCTFail("got \(err)") }
             XCTAssertEqual((err as? KeychainError)?.exitCode, 1)
             XCTAssertTrue(err.localizedDescription.contains("nothing was written"), err.localizedDescription)
@@ -965,6 +1019,45 @@ final class KeychainStoreTests: XCTestCase {
         // The same class passes.
         try KeychainStore.save(service: service, account: "c", value: "v2", allowReplacement: true, expectedClass: .own)
         XCTAssertEqual(try readOwn(account: "c"), "v2")
+    }
+
+    func testConsentIsRecheckedWhenTheClassChangesAfterTheFirstInspection() throws {
+        // #22: the dialog described an item only this binary can read. After that
+        // inspection and before the backup, another writer adds a second trusted
+        // application. The backup and the pre-delete observation then agree with
+        // each other, so only a comparison with the class the user saw can stop
+        // the replacement from ending that application's access unannounced.
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "c22", value: "v1")
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "c22"), .own)
+        KeychainStore.afterInspectHook = { [weak self] _, account in
+            guard let self, let item = self.currentItem(account: account) else { return XCTFail("no item") }
+            var me: SecTrustedApplication?; var other: SecTrustedApplication?
+            XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+            XCTAssertEqual(SecTrustedApplicationCreateFromPath("/usr/bin/security", &other), errSecSuccess)
+            var access: SecAccess?
+            XCTAssertEqual(SecKeychainItemCopyAccess(item, &access), errSecSuccess)
+            var list: CFArray?
+            XCTAssertEqual(SecAccessCopyACLList(access!, &list), errSecSuccess)
+            for acl in (list as! [SecACL]) {
+                let auths = (SecACLCopyAuthorizations(acl) as? [String]) ?? []
+                guard auths.contains(kSecACLAuthorizationDecrypt as String) else { continue }
+                XCTAssertEqual(SecACLSetContents(acl, [me!, other!] as CFArray, "shared" as CFString,
+                                                 SecKeychainPromptSelector(rawValue: 0)), errSecSuccess)
+            }
+            XCTAssertEqual(SecKeychainItemSetAccess(item, access!), errSecSuccess)
+            guard case .foreign = try? KeychainStore.inspectExisting(service: self.service, account: account) else {
+                return XCTFail("the fixture must really have made the item foreign")
+            }
+            KeychainStore.afterInspectHook = nil
+        }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "c22", value: "v2",
+                                                   allowReplacement: true, expectedClass: .own)) { err in
+            guard case KeychainError.destinationClassChanged = err else {
+                return XCTFail("a class change after the dialog must void the consent; got \(err)")
+            }
+        }
+        XCTAssertEqual(try readOwn(account: "c22"), "v1", "the item is untouched")
     }
 
     func testARestoreThatCannotInspectTheDestinationIsUnknownNotOccupied() throws {

@@ -29,8 +29,10 @@ func storeOrDie(service: String, account: String, value: String, daemon: Bool = 
             let evidence: String
             switch previous {
             case .own: evidence = "an item trusted only to this executable"
-            case .allowAll: evidence = "an allow-all item (owner not attributable)"
-            case .foreign(let owners): evidence = "a foreign item trusting: " + (owners.isEmpty ? "unattributed applications" : owners.prefix(8).joined(separator: ", "))
+            case .allowAll(let scope): evidence = "an allow-all item (owner not attributable; \(scope == .plaintext ? "plaintext open to every application" : "wrapped export only"))"
+            case .foreign(let owners, let allowAll):
+                let listed = owners + (allowAll.map { [KeychainStore.allowAllOwnerLabel($0)] } ?? [])
+                evidence = "a foreign item trusting: " + (listed.isEmpty ? "unattributed applications" : listed.prefix(8).joined(separator: ", "))
             case .none, .unsupported: evidence = "the selected item"
             }
             emit("→ explicitly replaced \(sanitize(service))/\(sanitize(account)): \(evidence)", to: true)

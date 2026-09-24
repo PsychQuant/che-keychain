@@ -32,17 +32,42 @@ final class PromptDialogTests: XCTestCase {
     func testWarningTextSaysWhichAccessClassIsBeingReplacedAndWhatChanges() {
         // The dialog is the only place the user can still stop this, so it has to
         // say what is there now and what the replacement turns it into (#7 L1).
-        let worldReadable = PromptDialog.warningText(daemon: false, replacing: .allowAll) ?? ""
+        let worldReadable = PromptDialog.warningText(daemon: false, replacing: .allowAll(.plaintext)) ?? ""
         XCTAssertTrue(worldReadable.contains("ANY application can read"), worldReadable)
         XCTAssertTrue(worldReadable.contains("only this binary"), worldReadable)
 
-        let foreign = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"])) ?? ""
+        let foreign = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: nil)) ?? ""
         XCTAssertTrue(foreign.contains("other") && foreign.contains("access to the OLD value ends"), foreign)
         XCTAssertTrue(foreign.contains("only this binary"), "must also say what it becomes: \(foreign)")
 
         // Widening is the worst case and must name both halves.
         let widening = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""
         XCTAssertTrue(widening.contains("only this binary can read") && widening.contains("any application"), widening)
+    }
+
+    func testAnExportWrappedOnlyAllowAllItemIsNotDescribedAsReadableByEveryone() {
+        // Round-7 verify K1: all applications may export such an item only in
+        // wrapped (encrypted) form; the plaintext is not theirs. Replacing it with
+        // a --daemon item hands every application the plaintext, and the dialog
+        // is the one place that consent is asked for, so it must say so.
+        let wrapped = PromptDialog.warningText(daemon: true, replacing: .allowAll(.wrappedOnly)) ?? ""
+        XCTAssertFalse(wrapped.contains("ANY application can read"), wrapped)
+        XCTAssertTrue(wrapped.contains("WIDENS"), "the widening is named: \(wrapped)")
+        XCTAssertTrue(wrapped.contains("wrapped"), wrapped)
+        // Without --daemon the replacement is readable by this binary only: no widening claimed.
+        let narrowing = PromptDialog.warningText(daemon: false, replacing: .allowAll(.wrappedOnly)) ?? ""
+        XCTAssertFalse(narrowing.contains("WIDENS"), narrowing)
+        // A plaintext allow-all item replaced by another --daemon item widens nothing.
+        let same = PromptDialog.warningText(daemon: true, replacing: .allowAll(.plaintext)) ?? ""
+        XCTAssertFalse(same.contains("WIDENS"), same)
+
+        // Foreign: the count is of applications only; the allow-all entry is described, not counted.
+        let foreignWrapped = PromptDialog.warningText(daemon: true, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: .wrappedOnly)) ?? ""
+        XCTAssertTrue(foreignWrapped.contains("1 other application can read"), foreignWrapped)
+        XCTAssertFalse(foreignWrapped.contains("2 other"), foreignWrapped)
+        XCTAssertTrue(foreignWrapped.contains("WIDENS"), foreignWrapped)
+        let foreignOpen = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: .plaintext)) ?? ""
+        XCTAssertTrue(foreignOpen.contains("ANY application"), foreignOpen)
     }
 
     func testPairWarningNamesOnlyAccountsThatWillBeReplaced() {

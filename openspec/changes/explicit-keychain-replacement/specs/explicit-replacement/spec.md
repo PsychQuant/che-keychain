@@ -57,11 +57,29 @@ Once the keychain has accepted the new value, the command SHALL NOT delete any i
 - **THEN** the command SHALL leave the destination untouched, SHALL report that removal was not attempted because the item there cannot be proven to be this write, and SHALL NOT restore the backup
 
 ### Requirement: Noninteractive access boundary
-A stdin invocation SHALL NOT widen the ACL of an existing non-allow-all item to allow-all, even with --replace. Existing allow-all items SHALL support explicit daemon rotation when the backup is readable. The decision SHALL be taken from the access settings captured in the backup and confirmed by the immediately pre-delete observation; an earlier classification SHALL NOT authorize the write on its own. An item whose decrypt ACL carries an allow-all entry SHALL be eligible for rotation even when that ACL also names applications, because such a write widens nothing.
+A stdin invocation SHALL NOT widen plaintext access to an existing item, even with --replace: it SHALL rotate with --daemon only an item that already has an allow-all entry granting the plaintext (decrypt, any or export-clear), when the backup is readable. An allow-all entry that permits only export-wrapped SHALL NOT count, because exporting the wrapped value does not reveal the plaintext. The decision SHALL be taken from the access settings captured in the backup and confirmed by the immediately pre-delete observation; an earlier classification SHALL NOT authorize the write on its own. An item whose ACL carries a plaintext allow-all entry SHALL be eligible for rotation even when that ACL also names applications, because such a write widens nothing.
 
 #### Scenario: Widening refused
 - **WHEN** set --replace --stdin --daemon targets a non-allow-all item
 - **THEN** the command SHALL fail before deletion
+
+#### Scenario: Export-wrapped allow-all is not plaintext access
+- **WHEN** set --replace --stdin --daemon targets an item whose only allow-all entry permits export-wrapped
+- **THEN** the command SHALL fail before deletion and the item SHALL be unchanged
+
+### Requirement: Consent names the access being replaced
+The dialog SHALL state what the destination exposes now and what the replacement exposes, from the same classification the write uses. An allow-all entry that permits only export-wrapped SHALL NOT be described as readable by every application, and a --daemon replacement of any item whose plaintext is not already open to every application SHALL be named as widening access. An allow-all entry SHALL NOT be counted as an application.
+
+#### Scenario: Wrapped-only item replaced with --daemon
+- **WHEN** the dialog is shown for set --replace --daemon on an item whose only allow-all entry permits export-wrapped
+- **THEN** the warning SHALL name the replacement as widening access and SHALL NOT say every application can already read it
+
+### Requirement: Consent is bound to the class at deletion
+The access class the dialog described SHALL be compared with the class observed immediately before deletion, not only with the first inspection; a difference SHALL refuse with nothing deleted.
+
+#### Scenario: Class changes after the dialog
+- **WHEN** another writer changes the item's access class after the first inspection and before the backup
+- **THEN** the replacement SHALL fail with destinationClassChanged and the item SHALL be unchanged
 
 #### Scenario: Access tightened after the first inspection
 - **WHEN** an item classified allow-all at inspection carries no allow-all entry in the backup or in the pre-delete observation

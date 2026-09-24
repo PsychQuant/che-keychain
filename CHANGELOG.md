@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The replacement dialog no longer tells the user that an item whose only allow-all entry permits export-wrapped is already readable by any application. The access class now carries what an allow-all entry exposes, so the dialog, the refusal messages and the consent binding read the same fact as the widening guard; a `--daemon` replacement that widens plaintext access says "WIDENS access" first, and an allow-all entry is no longer counted as an application (#7).
+
+- `set --replace` compares the access class the dialog described with the class observed immediately before the delete, not only with the first inspection. An ACL change between the dialog and the backup no longer goes through (#22).
+
+- Every refusal that offers `set --replace` or `unset` now frames both as the user's decision, says the backup lives only until the new value is verified, and says an unreadable old value means a refusal. The `--stdin` widening refusal no longer calls every refused item "prompt-on-read" or offers a bare `unset`; the help, `README.md` and `CLAUDE.md` rule 5 no longer say a refusal leads with `unset` (#7).
+
+- `CLAUDE.md` rule 7 states when a rotation restores the old value (only after a failed add into an empty slot) and that a new value that reads back wrong is left in place (#7).
+
 - The non-interactive widening guard no longer treats an allow-all **export-wrapped** entry as "already readable by everything". Exporting the wrapped value does not reveal the plaintext, so `set --replace --stdin --daemon` on an item whose decrypt was limited to this binary could previously rewrite it with an allow-all decrypt ACL. Found by the cross-model reviewer; a test reproduces it (#7).
 
 - Rotating a `--daemon` item is `set --replace --daemon`: one command that backs up the old value before replacing it. The 0.3.0 advice — `unset` then `set --daemon` — discards the old value and is now given only as the user's decision to do so, in the help, the refusal messages and CLAUDE.md. The operation is not atomic (#7).
@@ -29,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The noninteractive widening check reads the access settings captured in the backup and reconfirmed immediately before the delete, instead of the classification taken before the backup existed. An ACL tightened in that window no longer authorizes an allow-all rotation (#7).
 
-- Rotation eligibility asks whether an allow-all decrypt entry exists rather than whether the item classifies as allow-all. An ACL carrying one alongside named applications is already readable by everything, so rotating it widens nothing and is no longer refused (#7).
+- Rotation eligibility asks whether an allow-all entry granting the plaintext exists rather than whether the item classifies as allow-all. An ACL carrying one alongside named applications is already readable by everything, so rotating it widens nothing and is no longer refused (#7).
 
 - The replacement dialog names the access class at the destination and what the replacement turns it into, instead of "replaces an existing secret" for every case (#7).
 

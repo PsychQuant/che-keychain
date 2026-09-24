@@ -37,16 +37,34 @@ enum PromptDialog {
             return daemon ? "daemon-readable ACL — allows ALL applications at the application-ACL layer; other keychain authorization may still be required" : nil
         case .own:
             now = "a secret only this binary can read"
-        case .allowAll:
+        case .allowAll(.plaintext):
             now = "a secret ANY application can read"
-        case .foreign(let owners):
-            now = owners.isEmpty
+        case .allowAll(.wrappedOnly):
+            // Round-7 verify K1: every application may export it only wrapped
+            // (still encrypted); the plaintext is not theirs.
+            now = "a secret no other application can read in plaintext (every application may export it only wrapped, still encrypted)"
+        case .foreign(let owners, let allowAll):
+            // The count is of applications; an allow-all entry is described, not counted.
+            var what = owners.isEmpty
                 ? "a secret nothing ties to this binary"
-                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read (their access to the OLD value ends)"
+                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read"
+            switch allowAll {
+            case .plaintext?:   what += " — and so can ANY application (allow-all entry)"
+            case .wrappedOnly?: what += " (every application may also export it wrapped, still encrypted — not the plaintext)"
+            case nil:           break
+            }
+            now = owners.isEmpty ? what : what + " (their access to the OLD value ends)"
         case .unsupported:
             now = "an existing secret whose access this binary cannot inspect"
         }
-        return "replaces \(now) with \(becomes)"
+        // A --daemon replacement of anything whose plaintext is not already open
+        // to every application widens access; say so before anything else.
+        let widens: Bool
+        switch existing {
+        case .unsupported: widens = false
+        default: widens = daemon && !existing.everyApplicationReadsPlaintext
+        }
+        return (widens ? "WIDENS access — " : "") + "replaces \(now) with \(becomes)"
     }
 
     static func run(title: String, destination: String, explain: String?, fields: [PromptField], warning: String? = nil) -> PromptResult {

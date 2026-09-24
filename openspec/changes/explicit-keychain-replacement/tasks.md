@@ -70,4 +70,13 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 9.4 (J5) A new `--daemon` item's dialog warning states the all-applications scope.
 - [x] 9.5 (J6) #9 docs state the two observed cases only and say a different Developer ID-signed release is untested.
 - [x] 9.6 (LOW) Test force-unwrap removed; CHANGELOG records the rotation change, the #9 observation and the J1 fix. A repo-wide grep for rotation, `unset` and #9 wording was run before and after the edits.
-- [ ] 9.7 Full suite green, then `/idd-verify --pr 17` round 7 (Codex on).
+- [x] 9.7 Full suite green (119/0), then `/idd-verify --pr 17` round 7 — ran 2026-09-24 with Codex on (6-AI): FAIL (0 HIGH, 4 MEDIUM groups); findings became section 10.
+
+## 10. Round 8 — round-7 verify findings
+
+- [x] 10.1 (K1) The access class carries what an allow-all entry exposes (`allowAll(.plaintext | .wrappedOnly)`, same on `foreign`); `Found.allowAllPlaintextEntry` removed so no consumer can miss it. The dialog no longer calls a wrapped-only item readable by any application, names a plaintext widening "WIDENS access", and no longer counts an allow-all entry as an application; the unattributable/foreign refusals and the success evidence line state the scope. Tests: classification of the J1 fixture, `warningText` for both scopes and for foreign, the mixed-ACL owners list.
+- [x] 10.2 (K2/K3) Every refusal that offers `set --replace` or `unset` frames both as the user's decision before either command, says the backup lives only until the new value is verified, and states the refusal of unreadable old values; `aclWideningRefused` no longer says "prompt-on-read item". The ordering test now covers all four refusals.
+- [x] 10.3 (K4) CLAUDE.md rule 7 says a restore happens only after a failed add into an empty slot and that a wrongly read-back new value is left in place.
+- [x] 10.4 (K5 / #22) The dialog's class is compared again with the observation immediately before the delete. RED reproduced (an own item made foreign after the dialog was replaced), then fixed.
+- [x] 10.5 (LOW) Help, CLAUDE.md rule 5/6, README (security table rows), the `save()` policy comment, the OSStatus / unsupported / ambiguous fallbacks, a test comment, and the openspec/CHANGELOG eligibility criterion aligned; direct tests for `hasAllowAllPlaintextEntry` on captured records and for the help text's rotation order. Closing check: every deletion suggestion in `Sources/` listed and compared with rules 6 and 7, not a keyword grep.
+- [ ] 10.6 Full suite green, then `/idd-verify --pr 17` round 8 (Codex on).
