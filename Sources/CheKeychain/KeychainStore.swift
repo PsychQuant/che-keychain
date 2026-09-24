@@ -590,12 +590,13 @@ enum KeychainStore {
                 try refusal(for: found.existing, service: service, account: account)
             }
             if allowReplacement, let item = found.item {
-                // Only proves a backup can be taken; the copy it reads is dropped.
-                // No wipe: the old value arrives as Data bridged from the CFData the Security
-                // framework returned, and resetBytes on it zeroes a fresh copy while the
-                // original buffer is released unchanged (observed; round-15 verify). A
-                // "wipe" here would only add one more copy of the secret.
-                _ = try replacementBackup(item, service: service, account: account)
+                // Everything `--replace` must establish before it may delete — a
+                // readable backup AND a rehearsal that reproduces its access
+                // settings — is checked here, before any dialog asks for a secret
+                // (round-19 verify: the rehearsal used to run only after the
+                // dialog). The copy read is dropped unwiped; see `replacementBackup`.
+                let backup = try replacementBackup(item, service: service, account: account)
+                try rehearseRecovery(backup, service: service, account: account)
             }
             states[account] = found.existing != .none
         }
@@ -937,9 +938,10 @@ enum KeychainStore {
             var apps: CFArray?; var description: CFString?
             var selector = SecKeychainPromptSelector(rawValue: 0)
             guard SecACLCopyContents(acl, &apps, &description, &selector) == errSecSuccess, let description else { throw KeychainError.notFound }
-            // A selector read from a stored item comes back byte-swapped (1 → 256,
-            // 256 → 1, 0x11 → 0x1100; observed) and writing swaps it again, so
-            // write it swapped back to reproduce what is stored. 0 is unchanged.
+            // A selector read from a stored item comes back byte-swapped relative to
+            // the value written (observed: written 1 reads 256, written 0x11 reads
+            // 0x1100), so write the read value swapped to reproduce what is stored.
+            // 0 is unchanged. Tested for 1 and 0x11, on the rehearsal and the restore.
             // The rehearsal compares the stored records, so if a system behaves
             // differently the result is a refusal, never a silent change.
             selector = SecKeychainPromptSelector(rawValue: selector.rawValue.byteSwapped)

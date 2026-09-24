@@ -574,6 +574,43 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try readOwn(account: "wrap"), "old", "the item is untouched")
     }
 
+    private func addSelectorFixture(account: String, selector: UInt16) throws {
+        var me: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("selector fixture" as CFString, [me!] as CFArray, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all, nonzero selector" as CFString,
+                                                      SecKeychainPromptSelector(rawValue: selector), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationDecrypt] as CFArray), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: account, kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+    }
+
+    func testAFailedReplaceRestoresANonzeroSelectorExactly() throws {
+        // Round-19 verify: the restore path uses the same rebuild as the rehearsal;
+        // show it reproduces a nonzero selector, for a one-byte and a two-byte value.
+        defer { resetSeams() }
+        for (account, selector) in [("sel1", UInt16(0x0001)), ("sel11", UInt16(0x0011))] {
+            try addSelectorFixture(account: account, selector: selector)
+            let before = try XCTUnwrap(KeychainStore.debugAccessRecords(service: service, account: account))
+            var calls = 0
+            KeychainStore.addRawStatusOverride = { _, acct, _ in
+                guard acct == account else { return nil }        // the probe uses its own account
+                calls += 1; return calls == 1 ? errSecIO : nil
+            }
+            XCTAssertThrowsError(try KeychainStore.save(service: service, account: account, value: "new", allowReplacement: true)) { err in
+                guard case KeychainError.explicitReplacementFailed(_, _, _, .restored) = err else { return XCTFail("\(account): got \(err)") }
+            }
+            KeychainStore.addRawStatusOverride = nil
+            XCTAssertEqual(try readOwn(account: account), "old")
+            let after = try XCTUnwrap(KeychainStore.debugAccessRecords(service: service, account: account))
+            // Integrity is not in the records; partition and every selector are.
+            XCTAssertEqual(after, before, "\(account): the restored access settings match the original")
+        }
+    }
+
     func testAPromptSelectorAllowAllEntryIsNotCountedAsOpen() throws {
         // Round-16/17 verify: an allow-all decrypt entry with a nonzero prompt
         // selector is not counted as already open to every application — what the
@@ -868,7 +905,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertTrue(help.contains("Without --replace, che-keychain never overwrites"), "the never-overwrite claim is scoped")
     }
 
-    func testZeroingAValueReadFromTheKeychainDoesNotReachItsBuffer() throws {
+    func testZeroingAValueReadFromTheKeychainDoesNotReachItsBufferWhileTheReadIsHeld() throws {
         // Round-15/16 verify (observed): the reason the README says keychain reads
         // are released unwiped — read through the same SecItemCopyMatching call
         // shape the store uses. If Foundation ever wipes in place, this fails and
@@ -1200,6 +1237,7 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertTrue(m.contains("set --replace --daemon") && m.contains("WIDENS"), m)
         XCTAssertFalse(m.contains("cannot be rebuilt"), m)
         XCTAssertFalse(m.contains("only after a confirmation prompt"), m)
+        XCTAssertTrue(m.contains("che-keychain unset"), "discarding remains the user's option: \(m)")
     }
 
     func testDeletionAdviceInFallbacksIsFramedAsTheUsersDecision() {
@@ -1256,6 +1294,11 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "additional control" as CFString, SecKeychainPromptSelector(rawValue: 0), &extra), errSecSuccess)
         XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationChangeACL] as CFArray), errSecSuccess)
         XCTAssertEqual(SecKeychainItemSetAccess(item, access!), errSecSuccess)
+        // Round-19 verify: a replacement the rehearsal would refuse is refused by
+        // preflight, before any dialog collects a secret for it.
+        XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: ["d"], allowReplacement: true)) { error in
+            guard case KeychainError.replacementBackupUnavailable(_, _, .policyNotReproducible) = error else { return XCTFail("preflight: got \(error)") }
+        }
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "d", value: "new", daemon: true, allowReplacement: true)) { error in
             guard case KeychainError.replacementBackupUnavailable(_, _, .policyNotReproducible) = error else { return XCTFail("got \(error)") }
             XCTAssertTrue(error.localizedDescription.contains("no deletion was attempted"), error.localizedDescription)
