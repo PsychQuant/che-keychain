@@ -806,7 +806,7 @@ final class KeychainStoreTests: XCTestCase {
                       "bytes and access policy, in the original keychain", "until the new value is verified",
                       "until the new one is verified", "backed up until",
                       "whose bytes or access settings do not match", "Exit 4 means that comparison failed",
-                      "are zeroed when the command finishes"]
+                      "are zeroed", "wipe is attempted", "is wiped on the way out", "zeroed like the backup"]
         for (name, text) in texts {
             XCTAssertTrue(text.contains(AppVersion.restoreRule), "\(name) does not quote the restore rule")
             XCTAssertTrue(text.contains(AppVersion.copyRule), "\(name) does not quote the copy rule")
@@ -828,6 +828,20 @@ final class KeychainStoreTests: XCTestCase {
         }
         let help = texts[0].1
         XCTAssertTrue(help.contains("Without --replace, che-keychain never overwrites"), "the never-overwrite claim is scoped")
+    }
+
+    func testZeroingAValueBridgedFromTheKeychainDoesNotReachItsBuffer() {
+        // Round-15 verify (observed): the reason README says keychain reads are
+        // released unwiped. If Foundation ever wipes in place, this fails and the
+        // README row should be revisited.
+        let bytes = Array("secretvalue-0123456789".utf8)
+        let cf = CFDataCreate(nil, bytes, bytes.count)!
+        let bridged: CFTypeRef = cf
+        var d = bridged as! Data
+        d.resetBytes(in: 0..<d.count)
+        XCTAssertFalse(d.contains { $0 != 0 }, "the Swift value is zeroed")
+        let original = Array(UnsafeBufferPointer(start: CFDataGetBytePtr(cf), count: CFDataGetLength(cf)))
+        XCTAssertEqual(original, bytes, "the framework's buffer still holds the secret")
     }
 
     func testTheForeignDaemonDialogDoesNotSayAccessEnds() {

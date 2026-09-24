@@ -580,10 +580,12 @@ enum KeychainStore {
                 try refusal(for: found.existing, service: service, account: account)
             }
             if allowReplacement, let item = found.item {
-                // Only proves a backup can be taken; the copy it reads is wiped
-                // at once (best-effort) rather than dropped (round-14 verify).
-                var check = try replacementBackup(item, service: service, account: account)
-                check.data.resetBytes(in: 0..<check.data.count)
+                // Only proves a backup can be taken; the copy it reads is dropped.
+                // No wipe: the old value arrives as Data bridged from the CFData the Security
+                // framework returned, and resetBytes on it zeroes a fresh copy while the
+                // original buffer is released unchanged (observed; round-15 verify). A
+                // "wipe" here would only add one more copy of the secret.
+                _ = try replacementBackup(item, service: service, account: account)
             }
             states[account] = found.existing != .none
         }
@@ -876,18 +878,19 @@ enum KeychainStore {
         }.sorted()
     }
 
+    /// The returned `data` is bridged from the CFData `SecItemCopyMatching` hands
+    /// back. It cannot be wiped: `resetBytes` would zero a fresh copy and leave
+    /// the framework's buffer as it was (round-15 verify, observed), so no caller
+    /// pretends to.
     private static func replacementBackup(_ item: SecKeychainItem, service: String, account: String) throws -> ReplacementBackup {
         try withoutInteraction {
-            guard var data = readValue(of: item) else {
+            guard let data = readValue(of: item) else {
                 throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .valueUnreadable)
             }
             var access: SecAccess?; var keychain: SecKeychain?
             guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess, let access,
                   SecKeychainItemCopyKeychain(item, &keychain) == errSecSuccess, let keychain,
                   let records = try? accessRecords(access) else {
-                // The value was read but will not be returned: wipe it here
-                // (best-effort, like every other copy of the old value).
-                data.resetBytes(in: 0..<data.count)
                 throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .accessUnreadable)
             }
             return ReplacementBackup(data: data, access: access, keychain: keychain, accessRecords: records)
@@ -984,19 +987,19 @@ enum KeychainStore {
         #if DEBUG
         afterInspectHook?(service, account)
         #endif
-        var backup = try replacementBackup(item, service: service, account: account)
-        defer { backup.data.resetBytes(in: 0..<backup.data.count) }
+        // The backup and the pre-delete re-read below hold the old value while this
+        // runs and are released unwiped: see `replacementBackup` for why a wipe
+        // cannot reach the bytes (README "Copies").
+        let backup = try replacementBackup(item, service: service, account: account)
         try rehearseRecovery(backup, service: service, account: account)
         // Prepare fresh access before deleting anything. The new value never
         // inherits the old item's owner/change-ACL permissions.
         let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
         guard let current = try? inspect(service: service, account: account), let currentItem = current.item,
               CFEqual(currentItem, item),
-              var now = try? replacementBackup(currentItem, service: service, account: account) else {
+              let now = try? replacementBackup(currentItem, service: service, account: account) else {
             throw KeychainError.replacementChanged(service: service, account: account)
         }
-        // A second copy of the old value; zeroed like the backup (README "Copies").
-        defer { now.data.resetBytes(in: 0..<now.data.count) }
         guard now.data == backup.data, now.accessRecords == backup.accessRecords, CFEqual(now.keychain, backup.keychain) else {
             throw KeychainError.replacementChanged(service: service, account: account)
         }
@@ -1065,9 +1068,8 @@ enum KeychainStore {
             _ = SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue)
             if rst == errSecSuccess { old = oldData as? Data }
         }
-        // Best-effort wipe of the restore buffer only; the new value itself
-        // (String from the dialog) is not wiped — pre-existing, see README.
-        defer { if old != nil { old!.resetBytes(in: 0..<old!.count) } }   // in place: `old` is the sole reference
+        // `old` is bridged from the keychain's buffer and is released unwiped, as
+        // is the new value (a String); see `replacementBackup` and README "Copies".
         let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
         // Re-create the item in the keychain it lives in, not the default one.
         var keychain: SecKeychain?

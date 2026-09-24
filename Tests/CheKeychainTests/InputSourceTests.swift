@@ -223,4 +223,24 @@ final class InputSourceTests: XCTestCase {
         pb.setString("   \n", forType: .string)
         XCTAssertThrowsError(try InputSource.readClipboard(pasteboard: pb))
     }
+
+    func testTheStdinBufferIsWipedOnSuccessAndOnAThrowingPath() throws {
+        // #15 item 5: the wipe is registered before any read can fail. Observe it
+        // on a success and on stdinTooLong, which throws from inside the read loop.
+        defer { InputSource.stdinWipeObserver = nil }
+        var seen: [Data] = []
+        InputSource.stdinWipeObserver = { seen.append($0) }
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "tok3n\n"), isTTY: false), "tok3n")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-keychain-long-\(UUID().uuidString)")
+        try Data(repeating: 0x61, count: InputSource.stdinLimit + 1024).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertThrowsError(try InputSource.readStdin(handle: try FileHandle(forReadingFrom: url), isTTY: false)) { err in
+            guard case InputSourceError.stdinTooLong = err else { return XCTFail("got \(err)") }
+        }
+        XCTAssertEqual(seen.count, 2, "the wipe ran on both exits")
+        for buffer in seen {
+            XCTAssertFalse(buffer.isEmpty)
+            XCTAssertFalse(buffer.contains { $0 != 0 }, "no nonzero byte is left in the buffer")
+        }
+    }
 }

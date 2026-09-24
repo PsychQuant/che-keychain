@@ -132,6 +132,9 @@ enum InputSource {
     /// arrived — a deadline, not an idle timeout, so a drip-feeding writer is
     /// bounded too. A writer that keeps the pipe open must not hang us forever.
     #if DEBUG
+    /// Sees the stdin buffer right after the deferred wipe, so a test can show
+    /// the wipe runs on every exit path and leaves no nonzero byte (#15 item 5).
+    static var stdinWipeObserver: ((Data) -> Void)?
     static var stdinDeadlineSeconds: Int32 = 30      // tests shorten it
     #else
     static let stdinDeadlineSeconds: Int32 = 30
@@ -167,7 +170,15 @@ enum InputSource {
         var buffer = Data()
         // Register before any read can fail. String/Data temporaries remain
         // ordinary memory; this only attempts to wipe this buffer's storage.
-        defer { buffer.resetBytes(in: 0..<buffer.count) }
+        // `buffer` is storage this process allocated and appends into, so the
+        // wipe reaches it. The `availableData` chunks appended to it are bridged
+        // from Foundation's own buffers and are released unwiped (README "Copies").
+        defer {
+            buffer.resetBytes(in: 0..<buffer.count)
+            #if DEBUG
+            stdinWipeObserver?(buffer)
+            #endif
+        }
         var scanned = 0            // bytes already scanned (incremental, O(n))
         var lineStart = 0          // start of the current line
         var contentSeen = false    // the current line has a non-blank byte

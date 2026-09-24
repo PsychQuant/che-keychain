@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - When plain `set` cannot put the old value back because it had no copy of it (unreadable or empty), the report now says the destination was not inspected and its state is unknown, instead of saying the item "is now absent" and to re-run `set` (#7).
 
-- Every copy of the OLD value a rotation or `--replace` holds — the backup, the preflight check's copy, the pre-delete re-read, a plain rotation's copy — is wiped on the way out, best-effort; the README "Copies" row lists them and says which are not wiped (#7).
+- The "wipes" of the old value (the `--replace` backup and a plain rotation's copy, and those added during this cycle) are removed: the value arrives bridged from the Security framework's buffer, and zeroing it zeroed only a fresh copy while adding one more copy of the secret (observed). The README "Copies" row now says which buffer is wiped — the stdin buffer, tested on success and on a throwing path — and that every other copy, the old value included, is released unwiped (#7, #15).
 
 - The generic `set (…)` failure message no longer suggests `set --replace`: most of those failures happen while inspecting the item, and `--replace` inspects it the same way (#7).
 
