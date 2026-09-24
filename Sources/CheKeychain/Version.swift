@@ -7,8 +7,11 @@ enum AppVersion {
     /// The one statement of when an old value comes back (round-11 verify: the
     /// same promise lived in six places and drifted each round). Every text that
     /// talks about recovery quotes these two sentences; a test pins that.
-    static let restoreRule = "The old value is written back only if adding the new value itself fails, a copy of the old value was obtained before the delete, and the destination is then empty; otherwise it is not written back, and the report says what the destination holds."
-    static let copyRule = "Plain `set` obtains that copy only when it can read the old value without a prompt; `set --replace` does not start without one."
+    static let restoreRule = "The old value is written back only if adding the new value itself fails, a copy of the old value was obtained before the delete, and the destination is then empty; even then the write-back can fail. Otherwise it is not written back, and the report says what the destination holds or that its state is unknown."
+    static let copyRule = "Plain `set` and `set-pair` obtain that copy only when they can read the old value without a prompt, and never write back an empty one; `set --replace` does not start without a copy."
+    /// How a written-back value is checked — different on the two paths
+    /// (round-12 verify: a README sentence claimed the --replace checks for both).
+    static let verifyRule = "What is written back is read back: `set --replace` restores the original access settings and compares the bytes, access settings and keychain with the backup; plain `set` and `set-pair` re-create the old value as an item only this binary can read and compare the bytes only. Exit 4 means that comparison failed."
     static let helpMessage = """
     \(versionString)
       A trust-isolated credential prompt for macOS keychain — the dialog runs in
@@ -48,8 +51,8 @@ enum AppVersion {
       of che-keychain at a different path, an app you once clicked "Always
       Allow" for), or an item with an "allow all applications" entry — which
       carries no owner identity and is also what --daemon writes. The refusal
-      names `set --replace` (backs up the old value until the new one is
-      verified; the old value is not kept afterwards) and `unset` (discards
+      names `set --replace` (holds a backup of the old value only while it
+      runs; the old value is not kept afterwards) and `unset` (discards
       it); both are the user's call, not the caller's. To rotate a daemon item use
       `set --replace --daemon`, which backs up the old value before replacing
       it (not atomic); `unset` then `set --daemon` discards the old value and
@@ -67,9 +70,7 @@ enum AppVersion {
       policy can be recreated and be removed before the original is deleted.
       Unreadable or unreproducible backups are refused: nothing is deleted,
       and the report says how to keep the old value or, if the user decides
-      it is expendable, how to discard it. \(restoreRule) A value
-      written back is read back and compared with the backup (exit 4 if it
-      does not match). This is not
+      it is expendable, how to discard it. \(restoreRule) \(verifyRule) This is not
       atomic and does not preserve label/comment/date metadata. No value is
       printed. --replace --stdin --daemon still cannot widen plaintext access
       to an existing item; it can rotate one whose plaintext is already open to

@@ -196,10 +196,10 @@ enum KeychainError: Error, LocalizedError {
     case storedValueMismatch(service: String, account: String, reason: MismatchReason, cleanup: MismatchCleanup)
 
     /// What `--replace` does with the old value, stated wherever it is offered
-    /// (round-7 verify K3): the backup lives only until the new value is
-    /// verified, and an unreadable old value means a refusal, not a replace.
+    /// (round-7 verify K3): the backup lives only while the command runs, and
+    /// an unreadable old value means a refusal, not a replace.
     private var replaceBackupTerms: String {
-        "`--replace` holds a backup of the old value only until the new value is verified — the old value is not kept afterwards — " +
+        "`--replace` holds a backup of the old value only while it runs — the old value is not kept afterwards — " +
         "and proceeds only if this binary can read the old value without a prompt; otherwise it refuses and changes nothing " +
         "(items created by `security add-generic-password` are one tested case of this). `set-pair` has no --replace: replace each account with `set`."
     }
@@ -624,7 +624,7 @@ enum KeychainStore {
     /// to that item (round 1). Replacing an item whose ACL lets any other
     /// application read it is a destructive act on someone else's secret, so
     /// it must be the user's explicit decision (`set --replace`, which backs
-    /// up the old value until the new one is verified, or `unset`), never a
+    /// up the old value while it runs, or `unset`), never a
     /// side effect of `set`. "Own" is a path identity, not provenance: an item some other
     /// program pre-created with a decrypt list naming only this binary is
     /// treated as ours (nothing else can read it) and IS replaced. An

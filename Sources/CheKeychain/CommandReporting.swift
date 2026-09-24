@@ -11,8 +11,8 @@ func pairFirstStoreNote(service: String, account: String, firstError: KeychainEr
 }
 
 /// What `set --replace` reports it replaced: the class observed immediately
-/// before the delete. An allow-all entry is listed first so the cap cannot hide
-/// it, and a truncated list says so.
+/// before the delete. An allow-all entry is stated after the application list,
+/// outside the cap, so it is never cut off; a truncated list says so.
 func replacementEvidence(_ previous: KeychainStore.Existing) -> String {
     switch previous {
     case .own: return "an item trusted only to this executable"

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `set --replace` supports explicit replacement of eligible foreign/allow-all items. It requires a readable backup and nonsecret access-policy rehearsal before deletion, rebuilds fresh ACL objects for recovery, and verifies restored bytes plus policy. Plain set stays conservative; stdin still cannot widen a non-allow-all ACL (#7).
+- `set --replace` supports explicit replacement of eligible foreign/allow-all items. It requires a readable backup and nonsecret access-policy rehearsal before deletion, rebuilds fresh ACL objects for recovery, and verifies restored bytes plus policy. Plain set stays conservative; `--stdin` still cannot widen plaintext access to an existing item (#7).
 
 - Optional `has --non-empty`: 0 nonzero bytes, 1 absent, 2 empty, 3 unavailable. It reads only a single own item with interaction disabled, reveals no value and changes nothing; plain has remains existence-only (#13).
 
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The replacement dialog counts only the OTHER applications an item trusts: an item shared by this binary and one other application now reads "1 application other than this binary", not 2, and a --daemon replacement no longer says their access to the old value ends (they can read the new one). The success line after `set --replace` and the foreign refusal state an allow-all entry apart from the applications, so it is never counted or cut off by the cap (#7).
 
-- One restore rule, quoted verbatim wherever recovery is described (help ×2, `README.md`, `CLAUDE.md`, the `--from-clipboard` confirmation): the old value is written back only if adding the new value itself fails, a copy of it was obtained before the delete, and the destination is then empty; plain `set` obtains that copy only when it can read the old value without a prompt. The confirmation no longer promises a restore "if the store fails", and the help and README no longer say a failed replacement "attempts to restore" in general. A test pins the rule in every text and bans the superseded phrasings (#7).
+- One restore rule, quoted verbatim wherever recovery is described (help ×2, `README.md`, `CLAUDE.md`, the `--from-clipboard` confirmation): the old value is written back only if adding the new value itself fails, a copy of it was obtained before the delete, and the destination is then empty; plain `set` obtains that copy only when it can read the old value without a prompt. It also names a failure of the write-back itself and says the report may only know that the state is unknown. How a written-back value is checked is stated separately for each path: `set --replace` restores the original access settings and compares bytes, access settings and keychain; plain `set` re-creates an item only this binary can read and compares bytes only. The confirmation, the help and the README previously promised a restore in more cases than the code performs one; they now quote the rules instead. A test pins the rules in the help, `README.md`, `CLAUDE.md` and the confirmation, and bans the superseded phrasings there and in this changelog's unreleased section (#7).
 
 - The foreign refusal says which entries it judged ("entries that can reveal the value") and states an allow-all entry apart from the applications it lists (#7).
 
@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `set --replace` compares the access class the dialog described with the class observed immediately before the delete, not only with the first inspection. An ACL change between the dialog and the backup no longer goes through (#22).
 
-- Every refusal that offers `set --replace` or `unset` now frames both as the user's decision, says the backup lives only until the new value is verified, and says an unreadable old value means a refusal. The `--stdin` widening refusal no longer calls every refused item "prompt-on-read" or offers a bare `unset`; the help, `README.md` and `CLAUDE.md` rule 5 no longer say a refusal leads with `unset` (#7).
+- Every refusal that offers `set --replace` or `unset` now frames both as the user's decision, says the backup is held only while the command runs, and says an unreadable old value means a refusal. The `--stdin` widening refusal no longer calls every refused item "prompt-on-read" or offers a bare `unset`; the help, `README.md` and `CLAUDE.md` rule 5 no longer say a refusal leads with `unset` (#7).
 
 - `CLAUDE.md` rule 7 lists the five outcomes after a rotation's delete, with their exit codes: the old value is restored only after a failed add into a slot observed empty — the report then says restored, restored but unverifiable, mismatched (exit 4), not restored because another item was found there, or unknown — and a new value that reads back wrong is left in place (#7). Every exit-1 state list in the help (detailed and summary), `README.md` (two) and `CLAUDE.md` names the same six states, including "another item found there", and a test pins that.
 
@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cleanup refused before a delete now reports a specific refusal with exit 1, not an invented deletion OSStatus or an instruction to remove an unverified item. A rejected restore may leave the destination unknown; exit-code documentation now includes that state (#15).
 - Ambiguous read-back directs the user to inspect the matching items; a pair's second-store failure retains the first store's full diagnostic. stdin registers its best-effort buffer wipe before reading, drops long-lived Data slices, and removes the unused EOF flag (#15).
-- A clipboard destination that becomes unwritable before confirmation is refused without a contradictory replacement warning. Both set dialog sources check their stated existence claim at write time; pair parity is tracked in #14 (#15).
+- A clipboard destination that becomes unwritable before confirmation is refused without a contradictory replacement warning. Both set dialog sources check their stated existence claim at write time; `set-pair` gained the same check (#14, #15).
 - Correct the identifier note: C1 controls are refused by set/set-pair, while has/unset retain raw names so legacy items remain reachable (#15).
 
 ## [0.3.0] — 2026-09-11

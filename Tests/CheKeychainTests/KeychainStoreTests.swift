@@ -765,11 +765,25 @@ final class KeychainStoreTests: XCTestCase {
         let banned = ["if the store fails", "attempts to restore", "restored, unverified and failed",
                       "re-stored if", "re-stored only if that fails", "restore it if the add fails",
                       "Recovery can still fail or remain unverified", "non-allow-all",
-                      "holds the restored previous value", "holding the restored previous value"]
+                      "holds the restored previous value", "holding the restored previous value",
+                      "bytes and access policy, in the original keychain", "until the new value is verified",
+                      "until the new one is verified", "backed up until"]
         for (name, text) in texts {
             XCTAssertTrue(text.contains(AppVersion.restoreRule), "\(name) does not quote the restore rule")
             XCTAssertTrue(text.contains(AppVersion.copyRule), "\(name) does not quote the copy rule")
             for phrase in banned { XCTAssertFalse(text.contains(phrase), "\(name) still says \"\(phrase)\"") }
+        }
+        // How a written-back value is checked differs by path; every document that
+        // describes it quotes the one statement (round-12 verify).
+        for (name, text) in texts.prefix(3) {
+            XCTAssertTrue(text.contains(AppVersion.verifyRule), "\(name) does not quote the verify rule")
+        }
+        // The unreleased changelog describes the same behaviour; it must not
+        // carry a superseded phrasing either (round-12 verify: it was not scanned).
+        let changelog = try String(contentsOf: root.appendingPathComponent("CHANGELOG.md"), encoding: .utf8)
+        let unreleased = flat(String(changelog[changelog.range(of: "## [Unreleased]")!.lowerBound..<(changelog.range(of: "\n## [0.")?.lowerBound ?? changelog.endIndex)]))
+        for phrase in banned + ["tracked in #14"] {
+            XCTAssertFalse(unreleased.contains(phrase), "CHANGELOG [Unreleased] still says \"\(phrase)\"")
         }
         let help = texts[0].1
         XCTAssertTrue(help.contains("Without --replace, che-keychain never overwrites"), "the never-overwrite claim is scoped")
