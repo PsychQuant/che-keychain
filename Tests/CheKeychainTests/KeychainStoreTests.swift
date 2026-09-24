@@ -736,7 +736,7 @@ final class KeychainStoreTests: XCTestCase {
             ("CLAUDE.md", between(claude, "Exit codes you should react to", "· `2`")),
         ]
         let states = ["unchanged", "left in place", "empty as far as the command can see",
-                      "restored previous value", "another item found there", "unknown"]
+                      "restore of the previous value (verified or not)", "another item found there", "unknown"]
         for (name, text) in lists {
             guard let text else { XCTFail("\(name): exit-1 list not found"); continue }
             for state in states {
@@ -746,12 +746,50 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
+    func testEveryRecoveryClaimQuotesTheOneRestoreRule() throws {
+        // Round-11 verify: the promise of when an old value comes back lived in
+        // six places and each round fixed one. Every text that talks about
+        // recovery now quotes AppVersion.restoreRule / copyRule verbatim, and the
+        // superseded phrasings are banned everywhere.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func flat(_ s: String) -> String {
+            s.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "^#\\s?", with: "", options: .regularExpression) }
+                .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        let texts: [(String, String)] = [
+            ("help", flat(AppVersion.helpMessage)),
+            ("README", flat(try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8))),
+            ("CLAUDE.md", flat(try String(contentsOf: root.appendingPathComponent("CLAUDE.md"), encoding: .utf8))),
+            ("clipboard notice", flat(ownItemOverwriteNotice(daemon: false))),
+        ]
+        let banned = ["if the store fails", "attempts to restore", "restored, unverified and failed",
+                      "re-stored if", "re-stored only if that fails", "restore it if the add fails",
+                      "Recovery can still fail or remain unverified", "non-allow-all",
+                      "holds the restored previous value", "holding the restored previous value"]
+        for (name, text) in texts {
+            XCTAssertTrue(text.contains(AppVersion.restoreRule), "\(name) does not quote the restore rule")
+            XCTAssertTrue(text.contains(AppVersion.copyRule), "\(name) does not quote the copy rule")
+            for phrase in banned { XCTAssertFalse(text.contains(phrase), "\(name) still says \"\(phrase)\"") }
+        }
+        let help = texts[0].1
+        XCTAssertTrue(help.contains("Without --replace, che-keychain never overwrites"), "the never-overwrite claim is scoped")
+    }
+
+    func testTheForeignDaemonDialogDoesNotSayAccessEnds() {
+        // Round-11 verify: with --daemon the new item is readable by every
+        // application, the listed ones included.
+        let w = PromptDialog.warningText(daemon: true, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: .plaintext)) ?? ""
+        XCTAssertFalse(w.contains("access to the OLD value ends"), w)
+        let plain = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: nil)) ?? ""
+        XCTAssertTrue(plain.contains("access to the OLD value ends"), plain)
+    }
+
     func testTheOwnItemConfirmationSaysWhenTheOldValueComesBack() {
         // Round-10 verify (Codex): the clipboard confirmation promised a restore
         // "if the store fails"; the code restores only after a failed add.
         let text = ownItemOverwriteNotice(daemon: false)
         XCTAssertFalse(text.contains("only if the store fails"), text)
-        XCTAssertTrue(text.contains("only if that add itself fails"), text)
+        XCTAssertTrue(text.contains(AppVersion.restoreRule) && text.contains(AppVersion.copyRule), text)
         XCTAssertTrue(text.contains("left in place"), text)
         XCTAssertTrue(ownItemOverwriteNotice(daemon: true).contains("daemon-readable"))
     }
@@ -917,7 +955,7 @@ final class KeychainStoreTests: XCTestCase {
         let cases: [(String, String, String)] = [
             ("unattributable", KeychainError.unattributable(service: "s", account: "a", scope: .plaintext).errorDescription ?? "", "set --replace --daemon"),
             ("unattributable(wrapped)", KeychainError.unattributable(service: "s", account: "a", scope: .wrappedOnly).errorDescription ?? "", "set --replace --daemon"),
-            ("foreignOwned", KeychainError.foreignOwned(service: "s", account: "a", owners: ["/usr/bin/security"], selfPath: "/me").errorDescription ?? "", "set --replace"),
+            ("foreignOwned", KeychainError.foreignOwned(service: "s", account: "a", owners: ["/usr/bin/security"], selfPath: "/me", allowAll: nil).errorDescription ?? "", "set --replace"),
             ("aclWideningRefused", KeychainError.aclWideningRefused(service: "s", account: "a").errorDescription ?? "", "--replace"),
         ]
         for (name, m, replaceCmd) in cases {
@@ -1067,7 +1105,7 @@ final class KeychainStoreTests: XCTestCase {
 
     func testForeignOwnedMessageQuotesTheRemedyAndCapsOwners() {
         let owners = (1...12).map { "/Applications/App\($0).app" }
-        let msg = KeychainError.foreignOwned(service: "my svc", account: "a'b", owners: owners, selfPath: "/me").errorDescription ?? ""
+        let msg = KeychainError.foreignOwned(service: "my svc", account: "a'b", owners: owners, selfPath: "/me", allowAll: nil).errorDescription ?? ""
         XCTAssertTrue(msg.contains("che-keychain unset --service 'my svc' --account 'a'\\''b'"), msg)
         XCTAssertTrue(msg.contains("… and 4 more"), msg)
     }

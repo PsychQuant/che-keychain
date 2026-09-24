@@ -142,7 +142,7 @@ enum KeychainError: Error, LocalizedError {
     /// replaces such an item — SecItemUpdate would "succeed" while leaving the
     /// secret under another program's ACL (round 1 of #5) — so it refuses and
     /// names the explicit remedy.
-    case foreignOwned(service: String, account: String, owners: [String], selfPath: String, allowAll: KeychainStore.AllowAllScope? = nil)
+    case foreignOwned(service: String, account: String, owners: [String], selfPath: String, allowAll: KeychainStore.AllowAllScope?)
     /// A caller without a dialog (`--stdin`) asked to re-create an existing
     /// item whose plaintext is not already open to every application as an
     /// allow-all one: only the dialog may widen access.
@@ -264,7 +264,7 @@ enum KeychainError: Error, LocalizedError {
         case .foreignOwned(let svc, let acct, let owners, let me, let allowAll):
             let shown = owners.prefix(8).joined(separator: ", ") + (owners.count > 8 ? ", … and \(owners.count - 8) more" : "")
             var evidence = owners.isEmpty
-                ? "its access list has no entry that names an application, so nothing ties it to this binary"
+                ? "none of its entries that can reveal the value names an application, so nothing ties it to this binary"
                 : "its access list trusts applications other than this binary (\(me)): \(shown)"
             // Stated apart from the applications, and before the capped list, so
             // it is never counted as one and never cut off.
@@ -272,8 +272,8 @@ enum KeychainError: Error, LocalizedError {
             return """
             keychain item \(svc)/\(acct) already exists but is not exclusively trusted to this che-keychain binary:
               \(evidence).
-              Nothing was written to \(svc)/\(acct). che-keychain only overwrites items whose access list trusts this \
-            binary alone; anything else may belong to another program, and replacing it would destroy that program's secret.
+              Nothing was written to \(svc)/\(acct). che-keychain only overwrites items whose entries that can reveal \
+            the value trust this binary alone; anything else may belong to another program, and replacing it would destroy that program's secret.
               Replacing or discarding it is the user's decision, not the caller's: do neither without the user's explicit say-so.
               To replace it: `che-keychain set --replace` with the same service/account. \(replaceBackupTerms)
               To discard the old value instead — it permanently deletes the stored secret — remove it explicitly, then retry:

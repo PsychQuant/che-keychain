@@ -19,19 +19,21 @@ func replacementEvidence(_ previous: KeychainStore.Existing) -> String {
     case .allowAll(let scope):
         return "an allow-all item (owner not attributable; \(scope == .plaintext ? "plaintext open to every application" : "wrapped export only"))"
     case .foreign(let owners, let allowAll):
-        let listed = (allowAll.map { [KeychainStore.allowAllOwnerLabel($0)] } ?? []) + owners
-        return "a foreign item trusting: " + (listed.isEmpty ? "unattributed applications"
-            : listed.prefix(8).joined(separator: ", ") + (listed.count > 8 ? ", … and \(listed.count - 8) more" : ""))
+        // Same shape as the refusal: the allow-all entry is stated apart, not
+        // counted among the applications (round-11 verify).
+        let apps = owners.isEmpty ? "no application named"
+            : owners.prefix(8).joined(separator: ", ") + (owners.count > 8 ? ", … and \(owners.count - 8) more" : "")
+        return "a foreign item trusting: " + apps + (allowAll.map { "; plus an allow-all entry — " + KeychainStore.allowAllOwnerLabel($0) } ?? "")
     case .none, .unsupported: return "the selected item"
     }
 }
 
 /// The `--from-clipboard` confirmation for an item this binary alone can read.
-/// It must promise no more recovery than `rotateOwn` / `replaceOwnItem` gives:
-/// the old value comes back only after a failed add (round-10 verify).
+/// It must promise no more recovery than `replaceOwnItem` gives, so it quotes
+/// the one restore rule (round-10/11 verify).
 func ownItemOverwriteNotice(daemon: Bool) -> String {
     "An item ALREADY EXISTS at this destination: Store DELETES it and adds the new value. "
-        + "The old value is put back only if that add itself fails and the destination is then empty; "
-        + "a new value that is added but reads back wrong is left in place and reported, and the old one is gone."
+        + AppVersion.restoreRule + " " + AppVersion.copyRule
+        + " A new value that is added but reads back wrong is left in place and reported, and the old one is gone."
         + (daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
 }

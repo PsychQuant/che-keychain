@@ -20,7 +20,8 @@ final class CommandReportingTests: XCTestCase {
         let owners = (1...9).map { "/Applications/App\($0).app" }
         let line = replacementEvidence(.foreign(owners: owners, allowAll: .plaintext))
         XCTAssertTrue(line.contains(KeychainStore.allowAllOwnerLabel(.plaintext)), line)
-        XCTAssertTrue(line.contains("… and 2 more"), line)
+        XCTAssertTrue(line.contains("… and 1 more"), "only applications count toward the cap: \(line)")
+        XCTAssertTrue(line.contains("plus an allow-all entry"), line)
         XCTAssertTrue(replacementEvidence(.allowAll(.wrappedOnly)).contains("wrapped export only"))
         XCTAssertEqual(replacementEvidence(.own), "an item trusted only to this executable")
     }

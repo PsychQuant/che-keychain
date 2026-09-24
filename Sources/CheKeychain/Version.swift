@@ -4,6 +4,11 @@ import Foundation
 enum AppVersion {
     static let version = "0.3.0"
     static let versionString = "che-keychain \(version)"
+    /// The one statement of when an old value comes back (round-11 verify: the
+    /// same promise lived in six places and drifted each round). Every text that
+    /// talks about recovery quotes these two sentences; a test pins that.
+    static let restoreRule = "The old value is written back only if adding the new value itself fails, a copy of the old value was obtained before the delete, and the destination is then empty; otherwise it is not written back, and the report says what the destination holds."
+    static let copyRule = "Plain `set` obtains that copy only when it can read the old value without a prompt; `set --replace` does not start without one."
     static let helpMessage = """
     \(versionString)
       A trust-isolated credential prompt for macOS keychain — the dialog runs in
@@ -37,8 +42,8 @@ enum AppVersion {
 
       Plain `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
       binary and nothing else, the item is deleted by reference and re-created
-      with the new value and the requested ACL (the old value is re-stored only if
-      that fails). Anything else is REFUSED before the dialog opens: an item
+      with the new value and the requested ACL. \(restoreRule) \(copyRule)
+      Anything else is REFUSED before the dialog opens: an item
       whose ACL trusts any other application (the `security` CLI, another copy
       of che-keychain at a different path, an app you once clicked "Always
       Allow" for), or an item with an "allow all applications" entry — which
@@ -48,8 +53,8 @@ enum AppVersion {
       it); both are the user's call, not the caller's. To rotate a daemon item use
       `set --replace --daemon`, which backs up the old value before replacing
       it (not atomic); `unset` then `set --daemon` discards the old value and
-      is the user's call, not the caller's. che-keychain never overwrites an item whose ACL lets
-      anything but this binary read it. "This binary alone" is a path identity,
+      is the user's call, not the caller's. Without --replace, che-keychain never
+      overwrites an item whose ACL lets anything but this binary read it. "This binary alone" is a path identity,
       not provenance: an item another program pre-created for this binary only
       counts as ours and is replaced. Refusals are decided before the dialog;
       a write can still fail afterwards for other reasons (locked keychain…). `unset` deletes by reference, so it
@@ -62,12 +67,13 @@ enum AppVersion {
       policy can be recreated and be removed before the original is deleted.
       Unreadable or unreproducible backups are refused: nothing is deleted,
       and the report says how to keep the old value or, if the user decides
-      it is expendable, how to discard it. Failed replacement
-      attempts to restore and verify the old bytes and policy; the report
-      distinguishes restored, unverified and failed recovery. This is not
+      it is expendable, how to discard it. \(restoreRule) A value
+      written back is read back and compared with the backup (exit 4 if it
+      does not match). This is not
       atomic and does not preserve label/comment/date metadata. No value is
-      printed. --replace --stdin --daemon still cannot widen an existing
-      non-allow-all ACL; it can rotate an existing allow-all item. set-pair
+      printed. --replace --stdin --daemon still cannot widen plaintext access
+      to an existing item; it can rotate one whose plaintext is already open to
+      every application. set-pair
       does not accept --replace. Ambiguous/unsupported matches stay refused.
 
       Moving this executable to a different physical path makes its old
@@ -119,7 +125,7 @@ enum AppVersion {
            value that read back empty or different and was LEFT IN PLACE (a name
            lookup cannot show it is this write's); empty as far as the command
            can see (on a rotation or --replace, the previous item was deleted
-           and not put back); holding the restored previous value (only after a
+           and not put back); holding a restore of the previous value (verified or not) (only after a
            failed add, and only into an empty destination); holding another
            item found there when the restore was attempted (left alone); or
            unknown. Inspect the destination before deleting anything.
@@ -155,8 +161,8 @@ enum AppVersion {
 
       Exit codes (set, set-pair): 0 stored and verified · 1 any other error,
       including "the new value did not land" — the slot is unchanged, holds
-      a value that read back wrong and was left in place, holds the restored
-      previous value, holds another item found there (left alone), is empty
+      a value that read back wrong and was left in place, holds a restore of the
+      previous value (verified or not), holds another item found there (left alone), is empty
       as far as the command can see, or has an unknown state; the message says
       which · 2
       cancelled · 3 write accepted but unverified · 4 restore does not match the

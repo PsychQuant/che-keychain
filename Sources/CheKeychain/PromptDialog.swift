@@ -55,7 +55,9 @@ enum PromptDialog {
             case .wrappedOnly?: what += " (every application may also export it wrapped, still encrypted — not the plaintext)"
             case nil:           break
             }
-            now = owners.isEmpty ? what : what + " (their access to the OLD value ends)"
+            // With --daemon the new item is readable by every application, those
+            // included, so do not reassure that their access ends (round-11 verify).
+            now = owners.isEmpty ? what : what + (daemon ? "" : " (their access to the OLD value ends)")
         case .unsupported:
             now = "an existing secret whose access this binary cannot inspect"
         }
