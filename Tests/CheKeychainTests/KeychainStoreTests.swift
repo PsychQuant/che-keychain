@@ -671,6 +671,20 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own)
     }
 
+    func testEachLostRestoreReportsOnlyWhatWasObserved() {
+        // Round-14 verify: previousUnreadable shares the "unknown" branch with
+        // previousEmpty; readdVanished (the destination WAS read) says empty as
+        // far as the command can see.
+        func msg(_ l: RestoreLoss) -> String {
+            KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .lost(l)).errorDescription ?? ""
+        }
+        for loss in [RestoreLoss.previousUnreadable, .previousEmpty] {
+            XCTAssertTrue(msg(loss).contains("state is unknown"), msg(loss))
+            XCTAssertFalse(msg(loss).contains("is now absent"), msg(loss))
+        }
+        XCTAssertTrue(msg(.readdVanished).contains("empty as far as this command can see"), msg(.readdVanished))
+    }
+
     func testAnEmptyOldValueIsNeverWrittenBackAndTheReportDoesNotGuessTheState() throws {
         // copyRule: the plain path never writes back an empty copy; the report
         // then says the state is unknown instead of inferring "absent" (round-13 verify).
@@ -791,7 +805,8 @@ final class KeychainStoreTests: XCTestCase {
                       "holds the restored previous value", "holding the restored previous value",
                       "bytes and access policy, in the original keychain", "until the new value is verified",
                       "until the new one is verified", "backed up until",
-                      "whose bytes or access settings do not match", "Exit 4 means that comparison failed"]
+                      "whose bytes or access settings do not match", "Exit 4 means that comparison failed",
+                      "are zeroed when the command finishes"]
         for (name, text) in texts {
             XCTAssertTrue(text.contains(AppVersion.restoreRule), "\(name) does not quote the restore rule")
             XCTAssertTrue(text.contains(AppVersion.copyRule), "\(name) does not quote the copy rule")

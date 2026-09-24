@@ -12,8 +12,10 @@ enum MismatchReason: String {
     case ambiguous
 }
 
-/// Why a rotation's previous value could not be put back. Most cases leave the
-/// slot empty; `readdFailed` and `destinationUnknown` leave it unknown and
+/// Why a rotation's previous value could not be put back. `readdVanished` is
+/// reported as empty as far as the command can see; `previousUnreadable` and
+/// `previousEmpty` return before the destination is inspected, and like
+/// `readdFailed` and `destinationUnknown` are reported as unknown;
 /// `destinationOccupied` leaves whatever item was found there.
 enum RestoreLoss: Equatable {
     /// The previous value could not be read before the replace (locked keychain / prompt needed).
@@ -578,7 +580,10 @@ enum KeychainStore {
                 try refusal(for: found.existing, service: service, account: account)
             }
             if allowReplacement, let item = found.item {
-                _ = try replacementBackup(item, service: service, account: account)
+                // Only proves a backup can be taken; the copy it reads is wiped
+                // at once (best-effort) rather than dropped (round-14 verify).
+                var check = try replacementBackup(item, service: service, account: account)
+                check.data.resetBytes(in: 0..<check.data.count)
             }
             states[account] = found.existing != .none
         }
@@ -873,13 +878,16 @@ enum KeychainStore {
 
     private static func replacementBackup(_ item: SecKeychainItem, service: String, account: String) throws -> ReplacementBackup {
         try withoutInteraction {
-            guard let data = readValue(of: item) else {
+            guard var data = readValue(of: item) else {
                 throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .valueUnreadable)
             }
             var access: SecAccess?; var keychain: SecKeychain?
             guard SecKeychainItemCopyAccess(item, &access) == errSecSuccess, let access,
                   SecKeychainItemCopyKeychain(item, &keychain) == errSecSuccess, let keychain,
                   let records = try? accessRecords(access) else {
+                // The value was read but will not be returned: wipe it here
+                // (best-effort, like every other copy of the old value).
+                data.resetBytes(in: 0..<data.count)
                 throw KeychainError.replacementBackupUnavailable(service: service, account: account, cause: .accessUnreadable)
             }
             return ReplacementBackup(data: data, access: access, keychain: keychain, accessRecords: records)

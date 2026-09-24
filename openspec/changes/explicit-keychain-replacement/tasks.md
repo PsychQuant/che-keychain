@@ -123,4 +123,10 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 16.3 The plain restore is asserted to re-create an item only this binary can read (`.own`).
 - [x] 16.4 The `--replace` pre-delete re-read of the old value is zeroed like the backup; the README "Copies" row lists the copies of the OLD value and which are zeroed.
 - [x] 16.5 The CHANGELOG slice in the pinning test no longer force-unwraps and ends at the next heading after [Unreleased]; the CHANGELOG states which rules are pinned where; README's "slot is then empty" carries the write-back-can-fail qualifier; CLAUDE.md rule 7's plain-path referent is explicit; #7's Current Status resynced.
-- [ ] 16.6 Full suite green, then `/idd-verify --pr 17` round 14 (Codex on, Devil's Advocate completing).
+- [x] 16.6 Full suite green (135/0), then `/idd-verify --pr 17` round 14 — ran 2026-09-24, Codex on, all six reviewers completed: FAIL (0 HIGH, 1 MEDIUM from Codex — the preflight backup copy of the old value was dropped without a wipe, which the round-14 README "Copies" row did not account for); findings became section 17.
+
+## 17. Round 15 — round-14 verify findings
+
+- [x] 17.1 (MEDIUM) The preflight backup check wipes the copy it reads; `replacementBackup` wipes the value it read when it then throws on unreadable access settings. The README "Copies" row says a wipe is attempted, best-effort, on the backup, the preflight copy, the pre-delete re-read and a plain rotation's copy (bridged buffers from the Security framework may be released unwiped), and that read-backs are not wiped; "are zeroed" is banned by the pinning test.
+- [x] 17.2 (LOW) `RestoreLoss` doc comment matches the reports; message tests for `previousUnreadable` (unknown) and `readdVanished` (empty as far as the command can see); CHANGELOG records the lost-restore report change and the wipes; #9, #11–#15 Current Status resynced. #15 item 5 (stdin buffer wipe) is discharged by the best-effort statement, not a test: a memory wipe of a bridged buffer is not observable from a test, which is why the docs say best-effort — recorded on #15.
+- [ ] 17.3 Full suite green, then `/idd-verify --pr 17` round 15 (Codex on, all reviewers completing).

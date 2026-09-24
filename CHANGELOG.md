@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The foreign refusal says which entries it judged ("entries that can reveal the value") and states an allow-all entry apart from the applications it lists (#7).
 
+- When plain `set` cannot put the old value back because it had no copy of it (unreadable or empty), the report now says the destination was not inspected and its state is unknown, instead of saying the item "is now absent" and to re-run `set` (#7).
+
+- Every copy of the OLD value a rotation or `--replace` holds — the backup, the preflight check's copy, the pre-delete re-read, a plain rotation's copy — is wiped on the way out, best-effort; the README "Copies" row lists them and says which are not wiped (#7).
+
 - The generic `set (…)` failure message no longer suggests `set --replace`: most of those failures happen while inspecting the item, and `--replace` inspects it the same way (#7).
 
 - The success line after `set --replace` names the class observed immediately before the delete, not the first inspection's (#7).
