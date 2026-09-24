@@ -154,7 +154,8 @@ enum AppVersion {
       Exit codes (set, set-pair): 0 stored and verified · 1 any other error,
       including "the new value did not land" — the slot is unchanged, holds
       a value that read back wrong and was left in place, holds the restored
-      previous value, is empty, or has an unknown state; the message says
+      previous value, holds an item another writer put there, is empty, or
+      has an unknown state; the message says
       which · 2
       cancelled · 3 write accepted but unverified · 4 restore does not match the
       backup (above). For

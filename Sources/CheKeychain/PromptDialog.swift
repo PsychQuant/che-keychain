@@ -45,11 +45,13 @@ enum PromptDialog {
             now = "a secret no other application can read in plaintext (every application may export it only wrapped, still encrypted)"
         case .foreign(let owners, let allowAll):
             // The count is of applications; an allow-all entry is described, not counted.
+            // `owners` comes from every entry that can reveal the secret, export-wrapped
+            // included, so it is "trusted by", not "can read" (round-9 verify M2).
             var what = owners.isEmpty
                 ? "a secret nothing ties to this binary"
-                : "a secret \(owners.count) other application\(owners.count == 1 ? "" : "s") can read"
+                : "a secret whose access list also trusts \(owners.count) other application\(owners.count == 1 ? "" : "s")"
             switch allowAll {
-            case .plaintext?:   what += " — and so can ANY application (allow-all entry)"
+            case .plaintext?:   what += " — and ANY application can read it (allow-all entry)"
             case .wrappedOnly?: what += " (every application may also export it wrapped, still encrypted — not the plaintext)"
             case nil:           break
             }

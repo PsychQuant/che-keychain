@@ -134,9 +134,10 @@ enum KeychainError: Error, LocalizedError {
     case replacementChanged(service: String, account: String)
     case replacementProbeCleanupFailed(probeService: String)
     case explicitReplacementFailed(service: String, account: String, detail: String, recovery: ExplicitRestoreOutcome)
-    /// The item's decrypt ACL trusts some application other than this binary
-    /// (`owners` lists every trusted application found), or no decrypt entry at
-    /// all could be attributed (`owners` empty). che-keychain never silently
+    /// The item's access list trusts some application other than this binary
+    /// (`owners` lists those other applications — never this binary — preceded by
+    /// a description of any allow-all entry, which is not an application), or no
+    /// entry at all could be attributed (`owners` empty). che-keychain never silently
     /// replaces such an item — SecItemUpdate would "succeed" while leaving the
     /// secret under another program's ACL (round 1 of #5) — so it refuses and
     /// names the explicit remedy.
@@ -263,7 +264,7 @@ enum KeychainError: Error, LocalizedError {
             let shown = owners.prefix(8).joined(separator: ", ") + (owners.count > 8 ? ", … and \(owners.count - 8) more" : "")
             let evidence = owners.isEmpty
                 ? "its decrypt ACL has no entry that names an application, so nothing ties it to this binary"
-                : "its access list trusts \(shown) — not only this binary (\(me))"
+                : "its access list trusts applications other than this binary (\(me)): \(shown)"
             return """
             keychain item \(svc)/\(acct) already exists but is not exclusively trusted to this che-keychain binary:
               \(evidence).

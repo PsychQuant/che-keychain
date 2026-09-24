@@ -241,7 +241,7 @@ final class KeychainStoreTests: XCTestCase {
         // says one other application, not two.
         XCTAssertFalse(owners.contains(me), "this binary is not another application: \(owners)")
         let warning = PromptDialog.warningText(daemon: false, replacing: existing) ?? ""
-        XCTAssertTrue(warning.contains("1 other application can read"), warning)
+        XCTAssertTrue(warning.contains("also trusts 1 other application"), warning)
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "shared", value: "fresh"))
         XCTAssertEqual(try readForeign(account: "shared"), "stale")
     }
@@ -899,6 +899,75 @@ final class KeychainStoreTests: XCTestCase {
                                               allowReplacement: true, expectedClass: seen)
         XCTAssertEqual(replaced, seen, "the reported class is the one observed before the delete")
         XCTAssertEqual(try readOwn(account: "ff"), "new")
+    }
+
+    func testANamedApplicationWithOnlyWrappedExportIsNotSaidToReadTheSecret() throws {
+        // Round-9 verify M2 (Codex): owners are collected from every entry that can
+        // reveal the secret, export-wrapped included, so the dialog must not tell
+        // the user each of them can read the plaintext.
+        var me: SecTrustedApplication?; var other: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath("/usr/bin/security", &other), errSecSuccess)
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("wrapped-other fixture" as CFString, [me!] as CFArray, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, [other!] as CFArray, "security wrapped export" as CFString,
+                                                      SecKeychainPromptSelector(rawValue: 0), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationExportWrapped] as CFArray), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "wo", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        let existing = try KeychainStore.inspectExisting(service: service, account: "wo")
+        guard case .foreign(let owners, _) = existing else { return XCTFail("fixture should be foreign: \(existing)") }
+        XCTAssertEqual(owners, ["/usr/bin/security"])
+        let warning = PromptDialog.warningText(daemon: false, replacing: existing) ?? ""
+        XCTAssertFalse(warning.contains("application can read") || warning.contains("applications can read"),
+                       "a wrapped-export entry is not read access: \(warning)")
+        XCTAssertTrue(warning.contains("also trusts 1 other application"), warning)
+        // The refusal evidence does not claim this binary is trusted either.
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "wo", value: "new")) { err in
+            let m = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertFalse(m.contains("not only this binary"), m)
+            XCTAssertTrue(m.contains("applications other than this binary"), m)
+        }
+    }
+
+    func testARefusalListsTheAllowAllEntryBeforeTheCap() throws {
+        // Round-9 verify (LOW): the order in `refusal(for:)` was stated, not tested.
+        let paths = ["/bin/ls", "/bin/cat", "/bin/echo", "/bin/date", "/bin/pwd", "/bin/sleep",
+                     "/bin/mkdir", "/bin/rm", "/bin/cp", "/usr/bin/security"]
+        let apps: [SecTrustedApplication] = paths.map { p in
+            var a: SecTrustedApplication?; XCTAssertEqual(SecTrustedApplicationCreateFromPath(p, &a), errSecSuccess); return a!
+        }
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("many apps" as CFString, apps as CFArray, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all" as CFString, SecKeychainPromptSelector(rawValue: 0), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationDecrypt] as CFArray), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "many", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "many", value: "new")) { err in
+            let m = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(m.contains(KeychainStore.allowAllOwnerLabel(.plaintext)), "the allow-all entry survives the cap: \(m)")
+            XCTAssertTrue(m.contains("more"), m)
+        }
+    }
+
+    func testAnUnverifiableExplicitReplaceLeavesTheNewItemAndExitsThree() throws {
+        // Round-9 verify (LOW): rule 7 outcome (5) on the --replace path, end to end.
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "u3", value: "v1", daemon: true)
+        KeychainStore.readBackReasonOverride = { _, _ in .unreadable }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "u3", value: "v2", daemon: true,
+                                                   allowReplacement: true, expectedClass: .allowAll(.plaintext))) { err in
+            guard case KeychainError.storedValueMismatch(_, _, .unreadable, .leftInPlace(previousReplaced: true)) = err else {
+                return XCTFail("got \(err)")
+            }
+            XCTAssertEqual((err as? KeychainError)?.exitCode, 3)
+        }
+        KeychainStore.readBackReasonOverride = nil
+        XCTAssertEqual(try readOwn(account: "u3"), "v2", "the unverified new value is left in place")
     }
 
     func testTheSetFallbackDoesNotOfferAReplaceThatHitsTheSameFailure() {

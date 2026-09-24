@@ -26,17 +26,7 @@ func storeOrDie(service: String, account: String, value: String, daemon: Bool = 
     do {
         let previous = try KeychainStore.save(service: service, account: account, value: value, daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectingExisting: expectingExisting, allowReplacement: allowReplacement, expectedClass: expectedClass)
         if allowReplacement && previous != .none {
-            let evidence: String
-            switch previous {
-            case .own: evidence = "an item trusted only to this executable"
-            case .allowAll(let scope): evidence = "an allow-all item (owner not attributable; \(scope == .plaintext ? "plaintext open to every application" : "wrapped export only"))"
-            case .foreign(let owners, let allowAll):
-                let listed = (allowAll.map { [KeychainStore.allowAllOwnerLabel($0)] } ?? []) + owners
-                evidence = "a foreign item trusting: " + (listed.isEmpty ? "unattributed applications"
-                    : listed.prefix(8).joined(separator: ", ") + (listed.count > 8 ? ", … and \(listed.count - 8) more" : ""))
-            case .none, .unsupported: evidence = "the selected item"
-            }
-            emit("→ explicitly replaced \(sanitize(service))/\(sanitize(account)): \(evidence)", to: true)
+            emit("→ explicitly replaced \(sanitize(service))/\(sanitize(account)): \(replacementEvidence(previous))", to: true)
         }
         return nil
     } catch let e as KeychainError where e.exitCode == 3 {
