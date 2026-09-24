@@ -17,7 +17,13 @@ func replacementEvidence(_ previous: KeychainStore.Existing) -> String {
     switch previous {
     case .own: return "an item trusted only to this executable"
     case .allowAll(let scope):
-        return "an allow-all item (owner not attributable; \(scope == .plaintext ? "plaintext open to every application" : "wrapped export only"))"
+        let what: String
+        switch scope {
+        case .plaintext:   what = "plaintext open to every application"
+        case .wrappedOnly: what = "wrapped export only"
+        case .promptGated: what = "every application only after a confirmation prompt"
+        }
+        return "an allow-all item (owner not attributable; \(what))"
     case .foreign(let owners, let allowAll):
         // Same shape as the refusal: the allow-all entry is stated apart, not
         // counted among the applications (round-11 verify).

@@ -224,13 +224,17 @@ final class InputSourceTests: XCTestCase {
         XCTAssertThrowsError(try InputSource.readClipboard(pasteboard: pb))
     }
 
-    func testTheStdinBufferIsWipedOnSuccessAndOnAThrowingPath() throws {
-        // #15 item 5: the wipe is registered before any read can fail. Observe it
-        // on a success and on stdinTooLong, which throws from inside the read loop.
+    func testTheStdinBufferIsWipedInPlaceOnSuccessAndOnAThrowingPath() throws {
+        // #15 item 5: the wipe is registered before any read can fail, and it
+        // zeroes the buffer's own storage, not a copy-on-write copy (round-16
+        // verify: an all-zero value alone cannot tell the two apart). The success
+        // value is longer than Data's inline representation, so heap storage is
+        // exercised on both exits.
         defer { InputSource.stdinWipeObserver = nil }
-        var seen: [Data] = []
-        InputSource.stdinWipeObserver = { seen.append($0) }
-        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: "tok3n\n"), isTTY: false), "tok3n")
+        var seen: [(Data, Bool)] = []
+        InputSource.stdinWipeObserver = { seen.append(($0, $1)) }
+        let token = String(repeating: "t0k3n-", count: 6)          // 36 bytes
+        XCTAssertEqual(try InputSource.readStdin(handle: pipe(with: token + "\n"), isTTY: false), token)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("che-keychain-long-\(UUID().uuidString)")
         try Data(repeating: 0x61, count: InputSource.stdinLimit + 1024).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
@@ -238,8 +242,9 @@ final class InputSourceTests: XCTestCase {
             guard case InputSourceError.stdinTooLong = err else { return XCTFail("got \(err)") }
         }
         XCTAssertEqual(seen.count, 2, "the wipe ran on both exits")
-        for buffer in seen {
-            XCTAssertFalse(buffer.isEmpty)
+        for (buffer, inPlace) in seen {
+            XCTAssertGreaterThan(buffer.count, 14)
+            XCTAssertTrue(inPlace, "the wipe zeroed the buffer's own storage, not a copy")
             XCTAssertFalse(buffer.contains { $0 != 0 }, "no nonzero byte is left in the buffer")
         }
     }

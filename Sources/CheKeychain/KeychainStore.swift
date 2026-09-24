@@ -315,6 +315,9 @@ enum KeychainError: Error, LocalizedError {
             case .wrappedOnly:
                 exposes = "That entry lets every application export the value only wrapped (still encrypted); the plaintext is not open to every application, so this is not what a `--daemon` item looks like."
                 daemonEffect = "makes the new value readable by every application — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
+            case .promptGated:
+                exposes = "That entry lets every application read the value only after a confirmation prompt (a prompt selector), so the plaintext is not open to every application without it; this is not what a `--daemon` item looks like."
+                daemonEffect = "makes the new value readable by every application with no prompt — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
             }
             return """
             keychain item \(svc)/\(acct) already exists with an "allow all applications" entry, which carries \
@@ -525,6 +528,10 @@ enum KeychainStore {
         case plaintext
         /// export-wrapped only: every application may export the value encrypted.
         case wrappedOnly
+        /// A plaintext allow-all entry whose prompt selector is not 0 (e.g. it
+        /// asks for the keychain password): every application may read it, but
+        /// only after that confirmation — not "already open" (round-16 verify).
+        case promptGated
     }
 
     /// Public view of `inspect` without the item reference.
@@ -559,8 +566,10 @@ enum KeychainStore {
                   let auths = obj["authorizations"] as? [String],
                   auths.contains(where: plaintextAuthorizations.contains) else { return false }
             // `accessRecords` serializes "trusts every application" as a null
-            // application list, the same shape `classify` reads from the API.
-            return obj["applications"] is NSNull
+            // application list, the same shape `classify` reads from the API. A
+            // nonzero prompt selector gates that access (round-16 verify): only a
+            // selector of 0 counts as open.
+            return obj["applications"] is NSNull && (obj["selector"] as? NSNumber)?.intValue == 0
         }
     }
 
@@ -615,6 +624,7 @@ enum KeychainStore {
         switch scope {
         case .plaintext:   return "any application (allow-all entry, plaintext)"
         case .wrappedOnly: return "any application, wrapped export only (allow-all entry; not the plaintext)"
+        case .promptGated: return "any application, only after a confirmation prompt (allow-all entry with a prompt selector)"
         }
     }
 
@@ -1312,7 +1322,8 @@ enum KeychainStore {
         }
         var apps: [String] = []      // raw paths, compared unsanitized
         var sawAllowAll = false          // any revealing entry is allow-all (ownership: conservative)
-        var sawAllowAllPlaintext = false // an allow-all entry hands over the plaintext (widening guard)
+        var sawAllowAllPlaintext = false // an allow-all entry hands over the plaintext with no prompt (widening guard)
+        var sawAllowAllGated = false     // a plaintext allow-all entry gated by a nonzero prompt selector
         for acl in acls {
             var appList: CFArray?; var desc: CFString?; var sel = SecKeychainPromptSelector(rawValue: 0)
             let cst = SecACLCopyContents(acl, &appList, &desc, &sel)
@@ -1320,7 +1331,7 @@ enum KeychainStore {
             guard let appsArray = appList else {                                  // nil application list = any application
                 sawAllowAll = true
                 if let auths = SecACLCopyAuthorizations(acl) as? [String], auths.contains(where: plaintextAuthorizations.contains) {
-                    sawAllowAllPlaintext = true
+                    if sel.rawValue == 0 { sawAllowAllPlaintext = true } else { sawAllowAllGated = true }
                 }
                 continue
             }
@@ -1338,7 +1349,8 @@ enum KeychainStore {
         // Only an absolute path can be resolved without consulting the caller's
         // working directory; anything else is treated as another application.
         let isMe: (String) -> Bool = { $0.hasPrefix("/") && realpath($0) == me }
-        let scope: AllowAllScope? = sawAllowAllPlaintext ? .plaintext : (sawAllowAll ? .wrappedOnly : nil)
+        let scope: AllowAllScope? = sawAllowAllPlaintext ? .plaintext
+            : sawAllowAllGated ? .promptGated : (sawAllowAll ? .wrappedOnly : nil)
         if apps.contains(where: { !isMe($0) }) {
             var seen = Set<String>()
             // The OTHER applications only: this binary is not one of them, and

@@ -574,6 +574,39 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try readOwn(account: "wrap"), "old", "the item is untouched")
     }
 
+    func testAPasswordGatedAllowAllEntryDoesNotMakeAnItemReadableByEverything() throws {
+        // Round-16 verify (Codex, HIGH): an allow-all decrypt entry whose prompt
+        // selector asks for the password does not hand every application the
+        // plaintext. Treating it as "already open" let a no-dialog --daemon
+        // replacement drop the password requirement.
+        var me: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("gated fixture" as CFString, [me!] as CFArray, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all, password required" as CFString,
+                                                      SecKeychainPromptSelector(rawValue: 1), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationDecrypt] as CFArray), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "gate", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        let records = try XCTUnwrap(KeychainStore.debugAccessRecords(service: service, account: "gate"))
+        XCTAssertTrue(records.contains { $0.contains("allow-all, password required") && !$0.contains("\"selector\":0") },
+                      "the fixture must carry a nonzero prompt selector: \(records)")
+        switch try KeychainStore.inspectExisting(service: service, account: "gate") {
+        case .allowAll(.promptGated), .foreign(_, .promptGated?): break
+        case let other: XCTFail("the class must say the allow-all entry is prompt-gated: \(other)")
+        }
+        XCTAssertFalse(KeychainStore.hasAllowAllPlaintextEntry(records), "\(records)")
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "gate", value: "new",
+                                                   daemon: true, mayWidenExistingACL: false, allowReplacement: true)) { err in
+            guard case KeychainError.aclWideningRefused = err else {
+                return XCTFail("a password-gated allow-all entry must not authorize a no-dialog widening; got \(err)")
+            }
+        }
+        XCTAssertEqual(try readOwn(account: "gate"), "old", "the item is untouched")
+    }
+
     func testAnAllowAllEntryMixedWithNamedApplicationsStillRotates() throws {
         // allow-all + another application in one ACL classifies foreign, but the
         // item is already readable by everything: rotating it widens nothing.
@@ -830,18 +863,22 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertTrue(help.contains("Without --replace, che-keychain never overwrites"), "the never-overwrite claim is scoped")
     }
 
-    func testZeroingAValueBridgedFromTheKeychainDoesNotReachItsBuffer() {
-        // Round-15 verify (observed): the reason README says keychain reads are
-        // released unwiped. If Foundation ever wipes in place, this fails and the
-        // README row should be revisited.
-        let bytes = Array("secretvalue-0123456789".utf8)
-        let cf = CFDataCreate(nil, bytes, bytes.count)!
-        let bridged: CFTypeRef = cf
-        var d = bridged as! Data
+    func testZeroingAValueReadFromTheKeychainDoesNotReachItsBuffer() throws {
+        // Round-15/16 verify (observed): the reason the README says keychain reads
+        // are released unwiped — read through the same SecItemCopyMatching call
+        // shape the store uses. If Foundation ever wipes in place, this fails and
+        // the README row should be revisited.
+        try KeychainStore.save(service: service, account: "bridge", value: "secretvalue-0123456789")
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "bridge", kSecMatchLimit as String: kSecMatchLimitOne, kSecReturnData as String: true]
+        var out: CFTypeRef?
+        XCTAssertEqual(SecItemCopyMatching(q as CFDictionary, &out), errSecSuccess)
+        let cf = try XCTUnwrap(out) as! CFData
+        var d = cf as Data
         d.resetBytes(in: 0..<d.count)
         XCTAssertFalse(d.contains { $0 != 0 }, "the Swift value is zeroed")
         let original = Array(UnsafeBufferPointer(start: CFDataGetBytePtr(cf), count: CFDataGetLength(cf)))
-        XCTAssertEqual(original, bytes, "the framework's buffer still holds the secret")
+        XCTAssertEqual(original, Array("secretvalue-0123456789".utf8), "the framework's buffer still holds the secret")
     }
 
     func testTheForeignDaemonDialogDoesNotSayAccessEnds() {

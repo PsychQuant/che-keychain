@@ -132,9 +132,10 @@ enum InputSource {
     /// arrived — a deadline, not an idle timeout, so a drip-feeding writer is
     /// bounded too. A writer that keeps the pipe open must not hang us forever.
     #if DEBUG
-    /// Sees the stdin buffer right after the deferred wipe, so a test can show
-    /// the wipe runs on every exit path and leaves no nonzero byte (#15 item 5).
-    static var stdinWipeObserver: ((Data) -> Void)?
+    /// Sees the stdin buffer right after the deferred wipe, and whether the wipe
+    /// kept the same storage — i.e. zeroed the bytes in place rather than a
+    /// copy-on-write copy — so a test can show both (#15 item 5, round-16 verify).
+    static var stdinWipeObserver: ((Data, Bool) -> Void)?
     static var stdinDeadlineSeconds: Int32 = 30      // tests shorten it
     #else
     static let stdinDeadlineSeconds: Int32 = 30
@@ -168,15 +169,19 @@ enum InputSource {
             return (pfd.revents & Int16(POLLIN | POLLHUP)) != 0
         }
         var buffer = Data()
-        // Register before any read can fail. String/Data temporaries remain
-        // ordinary memory; this only attempts to wipe this buffer's storage.
-        // `buffer` is storage this process allocated and appends into, so the
-        // wipe reaches it. The `availableData` chunks appended to it are bridged
-        // from Foundation's own buffers and are released unwiped (README "Copies").
+        // Room for the largest accepted value up front, so the value is normally
+        // assembled in one storage block; storage outgrown past that is released
+        // unwiped, as are the `availableData` chunks appended here and any
+        // String/Data temporaries (README "Copies").
+        buffer.reserveCapacity(stdinLimit + 1)
+        // Registered before any read can fail: zero the buffer's final storage.
         defer {
+            #if DEBUG
+            let before = buffer.withUnsafeBytes { $0.baseAddress }
+            #endif
             buffer.resetBytes(in: 0..<buffer.count)
             #if DEBUG
-            stdinWipeObserver?(buffer)
+            stdinWipeObserver?(buffer, before == buffer.withUnsafeBytes { $0.baseAddress })
             #endif
         }
         var scanned = 0            // bytes already scanned (incremental, O(n))

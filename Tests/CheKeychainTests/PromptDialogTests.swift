@@ -70,6 +70,12 @@ final class PromptDialogTests: XCTestCase {
         XCTAssertTrue(foreignOpen.contains("ANY application"), foreignOpen)
     }
 
+    func testAPromptGatedItemIsNotDescribedAsOpenAndItsDaemonReplacementWidens() {
+        let gated = PromptDialog.warningText(daemon: true, replacing: .allowAll(.promptGated)) ?? ""
+        XCTAssertTrue(gated.contains("WIDENS") && gated.contains("confirmation prompt"), gated)
+        XCTAssertFalse(gated.contains("ANY application can read"), gated)
+    }
+
     func testPairWarningNamesOnlyAccountsThatWillBeReplaced() {
         XCTAssertNil(PromptDialog.pairWarningText(replacing: []))
         let one = PromptDialog.pairWarningText(replacing: ["client_secret"]) ?? ""
