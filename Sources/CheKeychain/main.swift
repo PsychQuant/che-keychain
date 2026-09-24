@@ -31,8 +31,9 @@ func storeOrDie(service: String, account: String, value: String, daemon: Bool = 
             case .own: evidence = "an item trusted only to this executable"
             case .allowAll(let scope): evidence = "an allow-all item (owner not attributable; \(scope == .plaintext ? "plaintext open to every application" : "wrapped export only"))"
             case .foreign(let owners, let allowAll):
-                let listed = owners + (allowAll.map { [KeychainStore.allowAllOwnerLabel($0)] } ?? [])
-                evidence = "a foreign item trusting: " + (listed.isEmpty ? "unattributed applications" : listed.prefix(8).joined(separator: ", "))
+                let listed = (allowAll.map { [KeychainStore.allowAllOwnerLabel($0)] } ?? []) + owners
+                evidence = "a foreign item trusting: " + (listed.isEmpty ? "unattributed applications"
+                    : listed.prefix(8).joined(separator: ", ") + (listed.count > 8 ? ", … and \(listed.count - 8) more" : ""))
             case .none, .unsupported: evidence = "the selected item"
             }
             emit("→ explicitly replaced \(sanitize(service))/\(sanitize(account)): \(evidence)", to: true)

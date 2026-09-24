@@ -197,9 +197,9 @@ enum KeychainError: Error, LocalizedError {
     /// (round-7 verify K3): the backup lives only until the new value is
     /// verified, and an unreadable old value means a refusal, not a replace.
     private var replaceBackupTerms: String {
-        "It holds a backup of the old value only until the new value is verified — the old value is not kept afterwards. " +
-        "It proceeds only if this binary can read the old value without a prompt, and otherwise refuses and changes nothing " +
-        "(items created by `security add-generic-password` are refused this way)."
+        "`--replace` holds a backup of the old value only until the new value is verified — the old value is not kept afterwards — " +
+        "and proceeds only if this binary can read the old value without a prompt; otherwise it refuses and changes nothing " +
+        "(items created by `security add-generic-password` are one tested case of this). `set-pair` has no --replace: replace each account with `set`."
     }
 
     var errorDescription: String? {
@@ -215,7 +215,7 @@ enum KeychainError: Error, LocalizedError {
                 msg += "\n  An item with this service/account appeared between the ownership check and the write. Retry."
             default:
                 if op.hasPrefix("set (") {
-                    msg += "\n  Nothing was written. If this persists, `che-keychain set --replace` can replace the item. Removing it instead (`che-keychain unset --service <service> --account <account>`, or Keychain Access) permanently deletes the stored value and is the user's decision, not the caller's."
+                    msg += "\n  Nothing was written. If this persists, inspect the item in Keychain Access. Removing it (`che-keychain unset --service <service> --account <account>`, or Keychain Access) permanently deletes the stored value and is the user's decision, not the caller's."
                 }
             }
             return msg
@@ -263,7 +263,7 @@ enum KeychainError: Error, LocalizedError {
             let shown = owners.prefix(8).joined(separator: ", ") + (owners.count > 8 ? ", … and \(owners.count - 8) more" : "")
             let evidence = owners.isEmpty
                 ? "its decrypt ACL has no entry that names an application, so nothing ties it to this binary"
-                : "its decrypt ACL trusts \(shown) — not only this binary (\(me))"
+                : "its access list trusts \(shown) — not only this binary (\(me))"
             return """
             keychain item \(svc)/\(acct) already exists but is not exclusively trusted to this che-keychain binary:
               \(evidence).
@@ -303,15 +303,15 @@ enum KeychainError: Error, LocalizedError {
             let daemonEffect: String
             switch scope {
             case .plaintext:
-                exposes = "That entry gives every application the plaintext."
+                exposes = "That entry gives every application the plaintext; this is also what `--daemon` items look like."
                 daemonEffect = "keeps the new value readable by every application (the rotation for a --daemon item)"
             case .wrappedOnly:
-                exposes = "That entry lets every application export the value only wrapped (still encrypted); the plaintext is not open to every application."
-                daemonEffect = "makes the new value readable by every application — for this item that WIDENS plaintext access, and the dialog says so"
+                exposes = "That entry lets every application export the value only wrapped (still encrypted); the plaintext is not open to every application, so this is not what a `--daemon` item looks like."
+                daemonEffect = "makes the new value readable by every application — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
             }
             return """
             keychain item \(svc)/\(acct) already exists with an "allow all applications" entry, which carries \
-            no owner identity — che-keychain cannot tell whether it created it (this is also what `--daemon` items look like). \
+            no owner identity — che-keychain cannot tell whether it created it. \
             \(exposes)
               Nothing was written to \(svc)/\(acct). Overwriting an item that may belong to another program is destructive, \
             so it is never a side effect of `set` — not even with --daemon.
@@ -347,7 +347,7 @@ enum KeychainError: Error, LocalizedError {
         case .emptyValue(let svc, let acct):
             return "refusing to store an empty (or whitespace-only) value for \(sanitize(svc))/\(sanitize(acct)) — nothing was written."
         case .destinationClassChanged(let svc, let acct):
-            return "the access class of \(sanitize(svc))/\(sanitize(acct)) changed after the dialog described it — nothing was written. The consent given was for the item the dialog showed; run the command again to see the current one."
+            return "the access class of \(sanitize(svc))/\(sanitize(acct)) changed after the dialog described it — the item was not changed. The consent given was for the item the dialog showed; run the command again to see the current one."
         case .destinationChanged(let svc, let acct, let expected):
             return expected
                 ? "the dialog said an item exists at \(sanitize(svc))/\(sanitize(acct)) and would be replaced, but none exists now — nothing was written. Retry."
@@ -476,7 +476,7 @@ enum KeychainStore {
         /// Not created (solely) by this binary: some ACL entry that can reveal
         /// the secret (decrypt / any / export) trusts an application other than
         /// this binary's real path. `owners` lists every trusted application
-        /// found; empty when no such entry names any application at all.
+        /// other than this binary; empty when no such entry names any application at all.
         /// `allowAll` is set when an "allow all applications" entry is present as
         /// well, and says what that entry exposes; it is never counted as an owner.
         case foreign(owners: [String], allowAll: AllowAllScope?)
@@ -583,7 +583,7 @@ enum KeychainStore {
         switch existing {
         case .foreign(let owners, let allowAll):
             throw KeychainError.foreignOwned(service: service, account: account,
-                                             owners: owners + (allowAll.map { [allowAllOwnerLabel($0)] } ?? []), selfPath: try selfPath())
+                                             owners: (allowAll.map { [allowAllOwnerLabel($0)] } ?? []) + owners, selfPath: try selfPath())
         case .allowAll(let scope):
             throw KeychainError.unattributable(service: service, account: account, scope: scope)
         case .unsupported:
@@ -679,9 +679,10 @@ enum KeychainStore {
             if daemon && !mayWidenExistingACL && !found.existing.everyApplicationReadsPlaintext {
                 throw KeychainError.aclWideningRefused(service: service, account: account)
             }
-            try replaceExplicitly(item, service: service, account: account, value: value,
-                                  daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectedClass: expectedClass)
-            return found.existing
+            // Report the class observed immediately before the delete — the one
+            // actually replaced — not the first inspection's (round-8 verify).
+            return try replaceExplicitly(item, service: service, account: account, value: value,
+                                         daemon: daemon, mayWidenExistingACL: mayWidenExistingACL, expectedClass: expectedClass)
         }
         try refusal(for: found.existing, service: service, account: account)
         switch found.existing {
@@ -961,7 +962,8 @@ enum KeychainStore {
         }
     }
 
-    private static func replaceExplicitly(_ item: SecKeychainItem, service: String, account: String, value: String, daemon: Bool, mayWidenExistingACL: Bool = true, expectedClass: Existing? = nil) throws {
+    @discardableResult
+    private static func replaceExplicitly(_ item: SecKeychainItem, service: String, account: String, value: String, daemon: Bool, mayWidenExistingACL: Bool = true, expectedClass: Existing? = nil) throws -> Existing {
         #if DEBUG
         afterInspectHook?(service, account)
         #endif
@@ -1009,7 +1011,7 @@ enum KeychainStore {
                 detail: "adding the new value returned OSStatus \(added)", recovery: restoreExplicit(backup, service: service, account: account))
         }
         let read = readBack(service: service, account: account, expected: Data(value.utf8))
-        guard let reason = read.mismatch else { return }
+        guard let reason = read.mismatch else { return current.existing }
         switch reason {
         case .unreadable, .ambiguous:
             throw KeychainError.storedValueMismatch(service: service, account: account, reason: reason,
@@ -1316,7 +1318,9 @@ enum KeychainStore {
         let scope: AllowAllScope? = sawAllowAllPlaintext ? .plaintext : (sawAllowAll ? .wrappedOnly : nil)
         if apps.contains(where: { !isMe($0) }) {
             var seen = Set<String>()
-            let owners = apps.map { sanitize($0) }.filter { seen.insert($0).inserted }
+            // The OTHER applications only: this binary is not one of them, and
+            // the dialog counts this list (round-8 verify L2).
+            let owners = apps.filter { !isMe($0) }.map { sanitize($0) }.filter { seen.insert($0).inserted }
             return .foreign(owners: owners, allowAll: scope)
         }
         if let scope { return .allowAll(scope) }

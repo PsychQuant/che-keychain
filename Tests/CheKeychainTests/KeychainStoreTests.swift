@@ -231,10 +231,17 @@ final class KeychainStoreTests: XCTestCase {
         let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
         p.arguments = ["add-generic-password", "-s", service, "-a", "shared", "-w", "stale", "-T", "/usr/bin/security", "-T", me]
         try p.run(); p.waitUntilExit(); XCTAssertEqual(p.terminationStatus, 0)
-        guard case .foreign(let owners, _) = try KeychainStore.inspectExisting(service: service, account: "shared") else {
+        let existing = try KeychainStore.inspectExisting(service: service, account: "shared")
+        guard case .foreign(let owners, _) = existing else {
             return XCTFail("co-trusted item must be foreign")
         }
         XCTAssertTrue(owners.contains("/usr/bin/security"), "owners=\(owners)")
+        // Round-8 verify L2: the owners are the OTHER applications. This binary
+        // is not among them, so the dialog built from the real classification
+        // says one other application, not two.
+        XCTAssertFalse(owners.contains(me), "this binary is not another application: \(owners)")
+        let warning = PromptDialog.warningText(daemon: false, replacing: existing) ?? ""
+        XCTAssertTrue(warning.contains("1 other application can read"), warning)
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "shared", value: "fresh"))
         XCTAssertEqual(try readForeign(account: "shared"), "stale")
     }
@@ -869,6 +876,40 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertFalse(cases[2].1.contains("the same `unset` then `set` re-creates"), cases[2].1)
     }
 
+    func testTheReplaceRecheckLetsAnUnchangedClassThrough() throws {
+        // Round-8 verify (LOW): the #22 comparison uses the associated values, so
+        // show that a second classification of an unchanged foreign or allow-all
+        // item is equal to the first and the replacement goes ahead.
+        try KeychainStore.save(service: service, account: "dd", value: "v1", daemon: true)
+        try KeychainStore.save(service: service, account: "dd", value: "v2", daemon: true,
+                               allowReplacement: true, expectedClass: .allowAll(.plaintext))
+        XCTAssertEqual(try readOwn(account: "dd"), "v2")
+
+        var me: SecTrustedApplication?; var other: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath("/usr/bin/security", &other), errSecSuccess)
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("foreign fixture" as CFString, [me!, other!] as CFArray, &access), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "ff", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        let seen = try KeychainStore.inspectExisting(service: service, account: "ff")
+        guard case .foreign = seen else { return XCTFail("fixture should be foreign: \(seen)") }
+        let replaced = try KeychainStore.save(service: service, account: "ff", value: "new",
+                                              allowReplacement: true, expectedClass: seen)
+        XCTAssertEqual(replaced, seen, "the reported class is the one observed before the delete")
+        XCTAssertEqual(try readOwn(account: "ff"), "new")
+    }
+
+    func testTheSetFallbackDoesNotOfferAReplaceThatHitsTheSameFailure() {
+        // Round-8 verify L1: most `set (…)` failures are inspection failures, and
+        // `--replace` runs the same inspection, so it is not offered there.
+        for op in ["set (read item ACL)", "set (look up existing item)", "set (add)"] {
+            let m = KeychainError.osStatus(errSecIO, operation: op).errorDescription ?? ""
+            XCTAssertFalse(m.contains("--replace"), "\(op): \(m)")
+        }
+    }
+
     func testDeletionAdviceInFallbacksIsFramedAsTheUsersDecision() {
         // Round-7 verify (LOW): the two OSStatus fallbacks were the last places
         // that advised deleting an item outright.
@@ -1013,7 +1054,7 @@ final class KeychainStoreTests: XCTestCase {
                                                    allowReplacement: true, expectedClass: .allowAll(.plaintext))) { err in
             guard case KeychainError.destinationClassChanged = err else { return XCTFail("got \(err)") }
             XCTAssertEqual((err as? KeychainError)?.exitCode, 1)
-            XCTAssertTrue(err.localizedDescription.contains("nothing was written"), err.localizedDescription)
+            XCTAssertTrue(err.localizedDescription.contains("the item was not changed"), err.localizedDescription)
         }
         XCTAssertEqual(try readOwn(account: "c"), "v1", "the item is untouched")
         // The same class passes.

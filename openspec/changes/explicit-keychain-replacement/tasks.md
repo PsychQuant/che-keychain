@@ -79,4 +79,11 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 10.3 (K4) CLAUDE.md rule 7 says a restore happens only after a failed add into an empty slot and that a wrongly read-back new value is left in place.
 - [x] 10.4 (K5 / #22) The dialog's class is compared again with the observation immediately before the delete. RED reproduced (an own item made foreign after the dialog was replaced), then fixed.
 - [x] 10.5 (LOW) Help, CLAUDE.md rule 5/6, README (security table rows), the `save()` policy comment, the OSStatus / unsupported / ambiguous fallbacks, a test comment, and the openspec/CHANGELOG eligibility criterion aligned; direct tests for `hasAllowAllPlaintextEntry` on captured records and for the help text's rotation order. Closing check: every deletion suggestion in `Sources/` listed and compared with rules 6 and 7, not a keyword grep.
-- [ ] 10.6 Full suite green, then `/idd-verify --pr 17` round 8 (Codex on).
+- [x] 10.6 Full suite green (123/0), then `/idd-verify --pr 17` round 8 — ran 2026-09-24 with Codex on (6-AI): FAIL (0 HIGH, 2 MEDIUM groups); findings became section 11.
+
+## 11. Round 9 — round-8 verify findings
+
+- [x] 11.1 (L1) The generic `set (…)` OSStatus fallback no longer offers `set --replace` (12 of its 15 operations are inspection failures that `--replace` repeats; `set (add)` has nothing to replace). Test pins it.
+- [x] 11.2 (L2) `foreign.owners` excludes this binary; the dialog built from a REAL classification of a co-trusted item says "1 other application". RED reproduced "2 other applications" first.
+- [x] 11.3 (LOW) Allow-all label listed first (cap cannot hide it; success line marks truncation); foreignOwned says "access list", not "decrypt ACL"; `replaceBackupTerms` names `--replace` as its subject, says `security` items are "one tested case", and says `set-pair` has no --replace; wrapped-only unattributable no longer says it looks like a `--daemon` item and says --stdin is refused; `destinationClassChanged` says "the item was not changed"; `save` returns the class observed before the delete; positive #22 tests for unchanged `.allowAll(.plaintext)` and `.foreign`; CLAUDE.md rule 7 lists the five post-delete outcomes (closed list, exit codes checked against the code and existing tests); design.md first sentence uses the plaintext criterion.
+- [ ] 11.4 Full suite green, then `/idd-verify --pr 17` round 9 (Codex on).
