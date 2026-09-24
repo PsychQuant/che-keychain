@@ -203,7 +203,7 @@ enum KeychainError: Error, LocalizedError {
     private var replaceBackupTerms: String {
         "`--replace` holds a backup of the old value only while it runs — the old value is not kept afterwards — " +
         "and proceeds only if this binary can read the old value without a prompt and rebuild its access settings exactly; otherwise it refuses and changes nothing " +
-        "(items created by `security add-generic-password`, and items whose access list carries a prompt selector, are tested cases of this). `set-pair` has no --replace: replace each account with `set`."
+        "(items created by `security add-generic-password` are one tested case of this). `set-pair` has no --replace: replace each account with `set`."
     }
 
     var errorDescription: String? {
@@ -317,7 +317,7 @@ enum KeychainError: Error, LocalizedError {
                 daemonEffect = "makes the new value readable by every application — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
             case .promptGated:
                 exposes = "That entry carries a nonzero prompt selector. che-keychain does not verify what the selector requires of a reader, so it does not count the plaintext as open to every application; this is not what a `--daemon` item looks like."
-                daemonEffect = ""
+                daemonEffect = "makes the new value readable by every application with no selector — for this item that WIDENS plaintext access: the dialog (or --from-clipboard confirmation) says so, and with --stdin it is refused"
             }
             return """
             keychain item \(svc)/\(acct) already exists with an "allow all applications" entry, which carries \
@@ -327,9 +327,7 @@ enum KeychainError: Error, LocalizedError {
             so it is never a side effect of `set` — not even with --daemon.
               Replacing or discarding it is the user's decision, not the caller's: the item may be another program's, and every \
             program that reads it would get the new value. Do neither without the user's explicit say-so.
-              \(scope == .promptGated
-                ? "`che-keychain set --replace` refuses this item, with or without --daemon: a nonzero selector reads back byte-swapped, so its access settings cannot be rebuilt exactly (observed), and nothing is deleted."
-                : "To replace it: `che-keychain set --replace --daemon` with the same service/account \(daemonEffect); `che-keychain set --replace` without --daemon makes it readable by this binary only. \(replaceBackupTerms)")
+              \("To replace it: `che-keychain set --replace --daemon` with the same service/account \(daemonEffect); `che-keychain set --replace` without --daemon makes it readable by this binary only. \(replaceBackupTerms)")
               To discard the old value instead — it permanently deletes the stored secret — remove it explicitly first, \
             then retry with the mode you want:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
@@ -532,8 +530,8 @@ enum KeychainStore {
         /// A plaintext allow-all entry whose prompt selector is not 0. What the
         /// selector requires of a reader is NOT verified (round-17 verify: one
         /// such fixture was read without a prompt), so it is simply not counted
-        /// as open — fail-closed. `--replace` cannot rebuild it: the selector
-        /// reads back byte-swapped (observed).
+        /// as open — fail-closed. `--replace` rebuilds it exactly (the selector
+        /// reads back byte-swapped and `rebuiltAccess` compensates; observed).
         case promptGated
     }
 
@@ -939,6 +937,12 @@ enum KeychainStore {
             var apps: CFArray?; var description: CFString?
             var selector = SecKeychainPromptSelector(rawValue: 0)
             guard SecACLCopyContents(acl, &apps, &description, &selector) == errSecSuccess, let description else { throw KeychainError.notFound }
+            // A selector read from a stored item comes back byte-swapped (1 → 256,
+            // 256 → 1, 0x11 → 0x1100; observed) and writing swaps it again, so
+            // write it swapped back to reproduce what is stored. 0 is unchanged.
+            // The rehearsal compares the stored records, so if a system behaves
+            // differently the result is a refusal, never a silent change.
+            selector = SecKeychainPromptSelector(rawValue: selector.rawValue.byteSwapped)
             if rights == [kSecACLAuthorizationChangeACL as String] {
                 owners += 1
                 guard owners == 1, SecACLSetContents(newOwner, apps, description, selector) == errSecSuccess else { throw KeychainError.notFound }

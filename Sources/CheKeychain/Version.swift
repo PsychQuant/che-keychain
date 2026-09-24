@@ -104,7 +104,8 @@ enum AppVersion {
       automation you trust) and prints the destination on stderr; with --daemon
       it refuses, at write time, to replace an existing item whose plaintext
       is not already open to every application (an allow-all entry that only
-      permits wrapped export does not count): no existing secret's plaintext
+      permits wrapped export, or one that carries a nonzero prompt selector,
+      does not count): no existing secret's plaintext
       access is widened without a dialog. A new allow-all
       item can still be created — including after an `unset`, which is also
       dialog-free; that destroys the old secret rather than exposing it.

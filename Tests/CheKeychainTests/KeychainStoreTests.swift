@@ -575,45 +575,41 @@ final class KeychainStoreTests: XCTestCase {
     }
 
     func testAPromptSelectorAllowAllEntryIsNotCountedAsOpen() throws {
-        // Round-16 verify (Codex, HIGH): an allow-all decrypt entry whose prompt
-        // selector asks for the password does not hand every application the
-        // plaintext. Treating it as "already open" let a no-dialog --daemon
-        // replacement drop the password requirement.
+        // Round-16/17 verify: an allow-all decrypt entry with a nonzero prompt
+        // selector is not counted as already open to every application — what the
+        // selector requires of a reader is not verified, so the no-dialog --daemon
+        // widening guard fails closed on it.
         var me: SecTrustedApplication?
         XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
         var access: SecAccess?
         XCTAssertEqual(SecAccessCreate("gated fixture" as CFString, [me!] as CFArray, &access), errSecSuccess)
         var extra: SecACL?
-        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all, password required" as CFString,
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all, nonzero selector" as CFString,
                                                       SecKeychainPromptSelector(rawValue: 1), &extra), errSecSuccess)
         XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationDecrypt] as CFArray), errSecSuccess)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
             kSecAttrAccount as String: "gate", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
         XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
         let records = try XCTUnwrap(KeychainStore.debugAccessRecords(service: service, account: "gate"))
-        XCTAssertTrue(records.contains { $0.contains("allow-all, password required") && !$0.contains("\"selector\":0") },
+        XCTAssertTrue(records.contains { $0.contains("allow-all, nonzero selector") && !$0.contains("\"selector\":0") },
                       "the fixture must carry a nonzero prompt selector: \(records)")
-        switch try KeychainStore.inspectExisting(service: service, account: "gate") {
-        case .allowAll(.promptGated), .foreign(_, .promptGated?): break
-        case let other: XCTFail("the class must say the allow-all entry is prompt-gated: \(other)")
-        }
+        // The fixture's named entry trusts this binary (the test runner), so the
+        // class is allow-all with a prompt-selector entry — the unattributable path.
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "gate"), .allowAll(.promptGated))
         XCTAssertFalse(KeychainStore.hasAllowAllPlaintextEntry(records), "\(records)")
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "gate", value: "new",
                                                    daemon: true, mayWidenExistingACL: false, allowReplacement: true)) { err in
             guard case KeychainError.aclWideningRefused = err else {
-                return XCTFail("a password-gated allow-all entry must not authorize a no-dialog widening; got \(err)")
+                return XCTFail("a nonzero-selector allow-all entry must not authorize a no-dialog widening; got \(err)")
             }
         }
         XCTAssertEqual(try readOwn(account: "gate"), "old", "the item is untouched")
-        // Round-17 verify (observed): a nonzero selector reads back byte-swapped
-        // (1 → 256), so the access settings cannot be rebuilt exactly and even a
-        // dialog-consented --replace refuses the item at the rehearsal.
-        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "gate", value: "new", allowReplacement: true)) { err in
-            guard case KeychainError.replacementBackupUnavailable(_, _, .policyNotReproducible) = err else {
-                return XCTFail("got \(err)")
-            }
-        }
-        XCTAssertEqual(try readOwn(account: "gate"), "old", "still untouched")
+        // Round-18 verify (observed): a stored selector reads back byte-swapped
+        // (1 → 256) and the swap is symmetric, so rebuilding writes it swapped back.
+        // The rehearsal then reproduces the policy exactly and a dialog-consented
+        // --replace (no widening) goes through.
+        try KeychainStore.save(service: service, account: "gate", value: "new", allowReplacement: true)
+        XCTAssertEqual(try readOwn(account: "gate"), "new")
     }
 
     func testAnAllowAllEntryMixedWithNamedApplicationsStillRotates() throws {
@@ -1197,14 +1193,13 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
-    func testAPromptSelectorRefusalDoesNotOfferAReplaceThatCannotWork() {
-        // Round-17 verify: --replace cannot rebuild a nonzero selector, so the
-        // refusal for that class names the refusal instead of the replace path.
+    func testAPromptSelectorRefusalOffersReplaceAndNamesTheWidening() {
+        // Round-18 verify: --replace does rebuild a nonzero selector, so the
+        // refusal offers it; a --daemon replacement widens and the text says so.
         let m = KeychainError.unattributable(service: "s", account: "a", scope: .promptGated).errorDescription ?? ""
-        XCTAssertTrue(m.contains("refuses this item, with or without --daemon"), m)
-        XCTAssertFalse(m.contains("To replace it:"), m)
+        XCTAssertTrue(m.contains("set --replace --daemon") && m.contains("WIDENS"), m)
+        XCTAssertFalse(m.contains("cannot be rebuilt"), m)
         XCTAssertFalse(m.contains("only after a confirmation prompt"), m)
-        XCTAssertTrue(m.contains("che-keychain unset"), "discarding remains the user's option: \(m)")
     }
 
     func testDeletionAdviceInFallbacksIsFramedAsTheUsersDecision() {
