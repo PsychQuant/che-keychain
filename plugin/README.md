@@ -13,6 +13,13 @@ Plugin distribution wrapper for the `che-keychain` CLI binary.
 
 Other tools — `CheTransportMCP --setup`, future MCPs, ad-hoc scripts — need to find `che-keychain` via PATH from any process context. Claude Code adds plugin `bin/` to the **Bash tool's** PATH only; MCP server processes and external scripts don't inherit it. `~/bin/` is the stable, system-wide install location that all of those can find.
 
+## 0.4.0 (binary + shell)
+
+- `set --replace` — explicit, consented replacement of an item `set` refuses (another program's, or an allow-all item including your own `--daemon` items). It reads a backup and rehearses restoring its access settings **before** any dialog; an item it cannot back up or reproduce is refused with nothing changed. Replacing or discarding is the user's decision, not the caller's. Rotating a `--daemon` item is `set --replace --daemon` (not atomic).
+- `has --non-empty` — `0` non-empty · `1` absent · `2` empty · `3` cannot tell; plain `has` is unchanged.
+- `set-pair` reaches consent parity with `set` (fail-closed per-account probe, write-time re-check); it stays dialog-only.
+- Dialogs and refusals say what the existing item exposes (at the application-ACL layer) and when a `--daemon` replacement WIDENS access.
+
 ## 0.3.0 (binary + shell)
 
 - `set --from-clipboard` — the user copies the secret, confirms a dialog (destination, fingerprint, first-line warning when it replaces an existing secret or makes it daemon-readable), and the clipboard is emptied once the store is read back.

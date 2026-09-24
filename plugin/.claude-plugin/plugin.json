@@ -1,8 +1,8 @@
 {
   "name": "che-keychain",
-  "version": "0.3.0",
-  "binaryVersion": "0.3.0",
-  "description": "Trust-isolated macOS keychain credential prompt. Native NSAlert renders inside a signed binary's own process — caller (LLM / MCP / script) never sees the typed value. 0.3.0: set --from-clipboard (paste-free, dialog-confirmed) and --stdin (automation), every store read back and verified, exit codes 0/1/2/3/4, ownership-aware set/unset. Wrapper auto-downloads the signed CheKeychain binary from the PsychQuant/che-keychain GitHub Release to ~/bin/che-keychain so consumers find it via PATH.",
+  "version": "0.4.0",
+  "binaryVersion": "0.4.0",
+  "description": "Trust-isolated macOS keychain credential prompt. Native NSAlert renders inside a signed binary's own process — caller (LLM / MCP / script) never sees the typed value. 0.4.0: set --replace (explicit, backed-up replacement of foreign / allow-all items with a recovery rehearsal before any dialog), has --non-empty, set-pair consent parity. Wrapper auto-downloads the signed CheKeychain binary from the PsychQuant/che-keychain GitHub Release to ~/bin/che-keychain so consumers find it via PATH.",
   "author": {
     "name": "Che Cheng"
   },
