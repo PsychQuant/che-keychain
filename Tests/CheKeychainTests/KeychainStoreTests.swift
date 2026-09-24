@@ -525,6 +525,33 @@ final class KeychainStoreTests: XCTestCase {
         }
     }
 
+    func testAnAllowAllExportWrappedEntryDoesNotMakeAnItemReadableByEverything() throws {
+        // Round-6 verify J1 (Codex): "any application may export the WRAPPED
+        // (still encrypted) value" is not "any application may read the
+        // plaintext". An item whose decrypt is limited to this binary but which
+        // carries an allow-all export-wrapped entry must not be treated as
+        // already readable by everything, so a non-interactive --daemon
+        // replacement of it would widen plaintext access and must be refused.
+        var me: SecTrustedApplication?
+        XCTAssertEqual(SecTrustedApplicationCreateFromPath(nil, &me), errSecSuccess)
+        var access: SecAccess?
+        XCTAssertEqual(SecAccessCreate("export-wrapped fixture" as CFString, [me!] as CFArray, &access), errSecSuccess)
+        var extra: SecACL?
+        XCTAssertEqual(SecACLCreateWithSimpleContents(access!, nil, "allow-all export-wrapped" as CFString,
+                                                      SecKeychainPromptSelector(rawValue: 0), &extra), errSecSuccess)
+        XCTAssertEqual(SecACLUpdateAuthorizations(extra!, [kSecACLAuthorizationExportWrapped] as CFArray), errSecSuccess)
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "wrap", kSecValueData as String: Data("old".utf8), kSecAttrAccess as String: access!]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "wrap", value: "new",
+                                                   daemon: true, mayWidenExistingACL: false, allowReplacement: true)) { err in
+            guard case KeychainError.aclWideningRefused = err else {
+                return XCTFail("an export-wrapped-only allow-all entry must not authorize a plaintext widening; got \(err)")
+            }
+        }
+        XCTAssertEqual(try readOwn(account: "wrap"), "old", "the item is untouched")
+    }
+
     func testAnAllowAllEntryMixedWithNamedApplicationsStillRotates() throws {
         // allow-all + another application in one ACL classifies foreign, but the
         // item is already readable by everything: rotating it widens nothing.

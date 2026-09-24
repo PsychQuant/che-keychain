@@ -448,8 +448,8 @@ enum KeychainStore {
         /// no such entry names another application — the shape `--daemon`
         /// writes, but also `security add-generic-password -A`. An allow-all
         /// entry mixed with a FOREIGN application classifies `.foreign` (that
-        /// rule wins); whether an allow-all entry exists at all is reported
-        /// separately as `Found.allowAllEntry`. No owner identity exists for
+        /// rule wins); whether an allow-all entry that hands over the
+        /// plaintext exists is reported separately as `Found.allowAllPlaintextEntry`. No owner identity exists for
         /// such items (labels are forgeable).
         case allowAll
         /// Not a file-keychain item; ACL not inspectable, not deletable by us.
@@ -466,16 +466,27 @@ enum KeychainStore {
         [kSecACLAuthorizationDecrypt, kSecACLAuthorizationAny,
          kSecACLAuthorizationExportClear, kSecACLAuthorizationExportWrapped].map { $0 as String })
 
-    /// True when some entry that can reveal the secret trusts every application
-    /// — the shape `--daemon` writes. Judged on the serialized records, so the
-    /// answer comes from access settings that were actually captured rather than
-    /// from a classification taken earlier (#7 H1).
-    static func hasAllowAllRevealingEntry(_ records: [String]) -> Bool {
+    /// The authorizations that hand over the PLAINTEXT. `revealingAuthorizations`
+    /// also counts export-wrapped, which is right for the conservative ownership
+    /// question (anything that lets the secret leave counts against "ours alone")
+    /// but wrong for "is this already readable by everything": exporting the
+    /// wrapped value does not reveal it. The widening guard needs this set
+    /// (round-6 verify J1, found by the cross-model reviewer).
+    static let plaintextAuthorizations: Set<String> = Set(
+        [kSecACLAuthorizationDecrypt, kSecACLAuthorizationAny,
+         kSecACLAuthorizationExportClear].map { $0 as String })
+
+    /// True when some entry that hands over the plaintext trusts every
+    /// application — the shape `--daemon` writes. Judged on the serialized
+    /// records, so the answer comes from access settings that were actually
+    /// captured rather than from a classification taken earlier (#7 H1). An
+    /// allow-all entry that only permits export-wrapped does not count (J1).
+    static func hasAllowAllPlaintextEntry(_ records: [String]) -> Bool {
         records.contains { record in
             guard let data = record.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let auths = obj["authorizations"] as? [String],
-                  auths.contains(where: revealingAuthorizations.contains) else { return false }
+                  auths.contains(where: plaintextAuthorizations.contains) else { return false }
             // `accessRecords` serializes "trusts every application" as a null
             // application list, the same shape `classify` reads from the API.
             return obj["applications"] is NSNull
@@ -593,7 +604,7 @@ enum KeychainStore {
             // when another application in the same ACL makes it classify foreign
             // (#7 M1). The decision that authorizes the write is taken again
             // inside `replaceExplicitly`, against the captured access settings.
-            if daemon && !mayWidenExistingACL && !found.allowAllEntry {
+            if daemon && !mayWidenExistingACL && !found.allowAllPlaintextEntry {
                 throw KeychainError.aclWideningRefused(service: service, account: account)
             }
             try replaceExplicitly(item, service: service, account: account, value: value,
@@ -899,8 +910,8 @@ enum KeychainStore {
         // what was actually captured and on what is there immediately before the
         // delete; an earlier reading never authorizes the write by itself (#7 H1).
         if daemon && !mayWidenExistingACL {
-            guard hasAllowAllRevealingEntry(backup.accessRecords),
-                  hasAllowAllRevealingEntry(now.accessRecords) else {
+            guard hasAllowAllPlaintextEntry(backup.accessRecords),
+                  hasAllowAllPlaintextEntry(now.accessRecords) else {
                 throw KeychainError.aclWideningRefused(service: service, account: account)
             }
         }
@@ -1126,7 +1137,7 @@ enum KeychainStore {
         /// separately from `existing` because a foreign application in the same
         /// ACL wins the classification while saying nothing about whether the
         /// item is already readable by everything (#7 M1).
-        var allowAllEntry: Bool = false
+        var allowAllPlaintextEntry: Bool = false
     }
 
     private static func inspect(service: String, account: String) throws -> Found {
@@ -1165,7 +1176,7 @@ enum KeychainStore {
         }
         let item = refs[0] as! SecKeychainItem
         let verdict = try classify(item: item, service: service, account: account)
-        return Found(existing: verdict.existing, item: item, allowAllEntry: verdict.allowAllEntry)
+        return Found(existing: verdict.existing, item: item, allowAllPlaintextEntry: verdict.allowAllPlaintextEntry)
     }
 
     /// Decide ownership from every ACL entry that can reveal the secret
@@ -1179,7 +1190,7 @@ enum KeychainStore {
     ///  4. no such entry at all → foreign with no owners (nothing ties it to us).
     ///  5. anything that cannot be read or decoded → thrown OSStatus (the caller
     ///     refuses; nothing is written).
-    private static func classify(item: SecKeychainItem, service: String, account: String) throws -> (existing: Existing, allowAllEntry: Bool) {
+    private static func classify(item: SecKeychainItem, service: String, account: String) throws -> (existing: Existing, allowAllPlaintextEntry: Bool) {
         var access: SecAccess?
         let ast = SecKeychainItemCopyAccess(item, &access)
         guard ast == errSecSuccess, let acc = access else {
@@ -1200,12 +1211,19 @@ enum KeychainStore {
             if auths.contains(where: revealing.contains) { acls.append(acl) }
         }
         var apps: [String] = []      // raw paths, compared unsanitized
-        var sawAllowAll = false
+        var sawAllowAll = false          // any revealing entry is allow-all (ownership: conservative)
+        var sawAllowAllPlaintext = false // an allow-all entry hands over the plaintext (widening guard)
         for acl in acls {
             var appList: CFArray?; var desc: CFString?; var sel = SecKeychainPromptSelector(rawValue: 0)
             let cst = SecACLCopyContents(acl, &appList, &desc, &sel)
             guard cst == errSecSuccess else { throw KeychainError.osStatus(cst, operation: "set (read ACL entry)") }
-            guard let appsArray = appList else { sawAllowAll = true; continue }   // nil application list = any application
+            guard let appsArray = appList else {                                  // nil application list = any application
+                sawAllowAll = true
+                if let auths = SecACLCopyAuthorizations(acl) as? [String], auths.contains(where: plaintextAuthorizations.contains) {
+                    sawAllowAllPlaintext = true
+                }
+                continue
+            }
             guard let list = appsArray as? [SecTrustedApplication] else {
                 throw KeychainError.osStatus(errSecDecode, operation: "set (decode trusted-application list)")
             }
@@ -1224,9 +1242,9 @@ enum KeychainStore {
             var seen = Set<String>()
             var owners = apps.map { sanitize($0) }.filter { seen.insert($0).inserted }
             if sawAllowAll { owners.append("any application (allow-all entry)") }
-            return (.foreign(owners: owners), sawAllowAll)
+            return (.foreign(owners: owners), sawAllowAllPlaintext)
         }
-        if sawAllowAll { return (.allowAll, true) }
+        if sawAllowAll { return (.allowAll, sawAllowAllPlaintext) }
         if apps.isEmpty { return (.foreign(owners: []), false) }
         return (.own, false)
     }
