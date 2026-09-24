@@ -30,11 +30,25 @@ echo "→ Building che-keychain v$SOURCE_VERSION"
 
 # Step 1: universal binary.
 swift build -c release --arch arm64 --arch x86_64
-BUILT="$REPO_ROOT/.build/apple/Products/Release/$BINARY_NAME"
+# Ask SwiftPM where it put the product: the universal-build output directory
+# moved between toolchains (.build/apple/Products/Release → .build/release with
+# Swift 6.4), and a hard-coded path silently picked up a stale binary left by an
+# older toolchain — the 0.4.0 build first signed and notarized the 0.3.0 file.
+BIN_DIR=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)
+BUILT="$BIN_DIR/$BINARY_NAME"
 if [[ ! -f "$BUILT" ]]; then
     echo "✗ Built binary not found at $BUILT" >&2
     exit 1
 fi
+# Refuse to ship a binary that does not report the version being cut.
+BUILT_VERSION=$("$BUILT" --version 2>/dev/null | sed -E 's/^che-keychain //')
+if [[ "$BUILT_VERSION" != "$SOURCE_VERSION" ]]; then
+    echo "✗ $BUILT reports version '$BUILT_VERSION', expected '$SOURCE_VERSION' — refusing to ship a stale binary" >&2
+    exit 1
+fi
+for ARCH in arm64 x86_64; do
+    lipo -archs "$BUILT" | grep -qw "$ARCH" || { echo "✗ $BUILT lacks $ARCH" >&2; exit 1; }
+done
 mkdir -p "$RELEASE_DIR"
 cp "$BUILT" "$RELEASE_DIR/$BINARY_NAME"
 
