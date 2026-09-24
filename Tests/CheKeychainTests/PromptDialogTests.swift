@@ -63,7 +63,7 @@ final class PromptDialogTests: XCTestCase {
 
         // Foreign: the count is of applications only; the allow-all entry is described, not counted.
         let foreignWrapped = PromptDialog.warningText(daemon: true, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: .wrappedOnly)) ?? ""
-        XCTAssertTrue(foreignWrapped.contains("also trusts 1 other application"), foreignWrapped)
+        XCTAssertTrue(foreignWrapped.contains("trusts 1 application other than this binary"), foreignWrapped)
         XCTAssertFalse(foreignWrapped.contains("2 other"), foreignWrapped)
         XCTAssertTrue(foreignWrapped.contains("WIDENS"), foreignWrapped)
         let foreignOpen = PromptDialog.warningText(daemon: false, replacing: .foreign(owners: ["/usr/bin/security"], allowAll: .plaintext)) ?? ""

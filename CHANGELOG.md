@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The replacement dialog counts only the OTHER applications an item trusts: an item shared by this binary and one other application now reads "1 other application", not 2. It says their access list "also trusts" them rather than that they "can read" the secret, because an application listed for wrapped export only cannot read the plaintext; the foreign refusal likewise lists "applications other than this binary" without implying this binary is among the trusted. A refusal lists an allow-all entry first, so the 8-entry cap cannot hide it, and the success line marks a truncated list (#7).
 
+- The `--from-clipboard` confirmation for an item this binary alone can read no longer promises the old value is put back "if the store fails". It says Store deletes the item first, puts the old value back only if the add itself fails, and leaves a new value that reads back wrong in place (#7).
+
+- The foreign refusal states an allow-all entry apart from the applications it lists, instead of listing "any application" as an application other than this binary, and says "access list" throughout. The dialog says the access list trusts "N applications other than this binary" rather than that they "also" do, since whether this binary is on the list is not recorded (#7).
+
 - The generic `set (…)` failure message no longer suggests `set --replace`: most of those failures happen while inspecting the item, and `--replace` inspects it the same way (#7).
 
 - The success line after `set --replace` names the class observed immediately before the delete, not the first inspection's (#7).
@@ -27,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Every refusal that offers `set --replace` or `unset` now frames both as the user's decision, says the backup lives only until the new value is verified, and says an unreadable old value means a refusal. The `--stdin` widening refusal no longer calls every refused item "prompt-on-read" or offers a bare `unset`; the help, `README.md` and `CLAUDE.md` rule 5 no longer say a refusal leads with `unset` (#7).
 
-- `CLAUDE.md` rule 7 lists the five outcomes after a rotation's delete, with their exit codes: the old value is restored only after a failed add into a slot observed empty — the report then says restored, restored but unverifiable, mismatched (exit 4), not restored because another writer's item is there, or unknown — and a new value that reads back wrong is left in place (#7). The exit-code descriptions in the help, `README.md` and `CLAUDE.md` include the "another writer's item is there" state.
+- `CLAUDE.md` rule 7 lists the five outcomes after a rotation's delete, with their exit codes: the old value is restored only after a failed add into a slot observed empty — the report then says restored, restored but unverifiable, mismatched (exit 4), not restored because another item was found there, or unknown — and a new value that reads back wrong is left in place (#7). Every exit-1 state list in the help (detailed and summary), `README.md` (two) and `CLAUDE.md` names the same six states, including "another item found there", and a test pins that.
 
 - The non-interactive widening guard no longer treats an allow-all **export-wrapped** entry as "already readable by everything". Exporting the wrapped value does not reveal the plaintext, so `set --replace --stdin --daemon` on an item whose decrypt was limited to this binary could previously rewrite it with an allow-all decrypt ACL. Found by the cross-model reviewer; a test reproduces it (#7).
 

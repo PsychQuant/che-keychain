@@ -25,3 +25,13 @@ func replacementEvidence(_ previous: KeychainStore.Existing) -> String {
     case .none, .unsupported: return "the selected item"
     }
 }
+
+/// The `--from-clipboard` confirmation for an item this binary alone can read.
+/// It must promise no more recovery than `rotateOwn` / `replaceOwnItem` gives:
+/// the old value comes back only after a failed add (round-10 verify).
+func ownItemOverwriteNotice(daemon: Bool) -> String {
+    "An item ALREADY EXISTS at this destination: Store DELETES it and adds the new value. "
+        + "The old value is put back only if that add itself fails and the destination is then empty; "
+        + "a new value that is added but reads back wrong is left in place and reported, and the old one is gone."
+        + (daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
+}

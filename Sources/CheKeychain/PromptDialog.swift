@@ -49,7 +49,7 @@ enum PromptDialog {
             // included, so it is "trusted by", not "can read" (round-9 verify M2).
             var what = owners.isEmpty
                 ? "a secret nothing ties to this binary"
-                : "a secret whose access list also trusts \(owners.count) other application\(owners.count == 1 ? "" : "s")"
+                : "a secret whose access list trusts \(owners.count) application\(owners.count == 1 ? "" : "s") other than this binary"
             switch allowAll {
             case .plaintext?:   what += " — and ANY application can read it (allow-all entry)"
             case .wrappedOnly?: what += " (every application may also export it wrapped, still encrypted — not the plaintext)"

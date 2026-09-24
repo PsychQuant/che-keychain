@@ -139,7 +139,7 @@ final class KeychainStoreTests: XCTestCase {
     func testSaveRefusesForeignOwnedItemAndNamesTheDeleteCommand() throws {
         try seedForeignItem(account: "foreign", value: "stale")
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "foreign", value: "fresh")) { err in
-            guard case KeychainError.foreignOwned(let svc, let acct, let owners, _) = err else {
+            guard case KeychainError.foreignOwned(let svc, let acct, let owners, _, _) = err else {
                 return XCTFail("expected .foreignOwned, got \(err)")
             }
             XCTAssertEqual(svc, service); XCTAssertEqual(acct, "foreign")
@@ -241,7 +241,7 @@ final class KeychainStoreTests: XCTestCase {
         // says one other application, not two.
         XCTAssertFalse(owners.contains(me), "this binary is not another application: \(owners)")
         let warning = PromptDialog.warningText(daemon: false, replacing: existing) ?? ""
-        XCTAssertTrue(warning.contains("also trusts 1 other application"), warning)
+        XCTAssertTrue(warning.contains("trusts 1 application other than this binary"), warning)
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "shared", value: "fresh"))
         XCTAssertEqual(try readForeign(account: "shared"), "stale")
     }
@@ -301,7 +301,7 @@ final class KeychainStoreTests: XCTestCase {
         // set-pair must refuse up front, not after the first account has landed.
         try seedForeignItem(account: "pass", value: "stale")
         XCTAssertThrowsError(try KeychainStore.preflight(service: service, accounts: ["user", "pass"])) { err in
-            guard case KeychainError.foreignOwned(_, let acct, _, _) = err else { return XCTFail("expected .foreignOwned, got \(err)") }
+            guard case KeychainError.foreignOwned(_, let acct, _, _, _) = err else { return XCTFail("expected .foreignOwned, got \(err)") }
             XCTAssertEqual(acct, "pass")
         }
         XCTAssertFalse(KeychainStore.has(service: service, account: "user"), "preflight must not write")
@@ -691,6 +691,71 @@ final class KeychainStoreTests: XCTestCase {
         XCTAssertEqual(try readOwn(account: "own"), "theirs", "the other writer's item is intact")
     }
 
+    func testAFailedExplicitAddDoesNotWriteTheBackupOverAnItemFoundThere() throws {
+        // Round-10 verify (LOW): rule 7 outcome (2)'s "another item was found
+        // there" on the --replace path, end to end.
+        defer { resetSeams() }
+        try KeychainStore.save(service: service, account: "ex", value: "v1", daemon: true)
+        var calls = 0
+        KeychainStore.addRawStatusOverride = { [weak self] _, account, _ in
+            guard account == "ex" else { return nil }      // the recovery probe uses its own account
+            calls += 1
+            guard calls == 1 else { return nil }
+            self?.competitorReplaces(account: account, with: "theirs")
+            return errSecDuplicateItem
+        }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "ex", value: "v2", daemon: true,
+                                                   allowReplacement: true, expectedClass: .allowAll(.plaintext))) { err in
+            guard case KeychainError.explicitReplacementFailed(_, _, _, .destinationOccupied) = err else { return XCTFail("got \(err)") }
+            XCTAssertEqual((err as? KeychainError)?.exitCode, 1)
+        }
+        resetSeams()
+        XCTAssertEqual(try readOwn(account: "ex"), "theirs", "the item found there is intact")
+    }
+
+    func testEveryExitOneStateListNamesTheSameStates() throws {
+        // Round-10 verify: the same closed list lives in five places and drifted
+        // twice. Each must name all six states the code reports for exit 1.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        func flat(_ s: String) -> String {
+            s.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "^#\\s?", with: "", options: .regularExpression) }
+                .joined(separator: " ").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        func between(_ text: String, _ start: String, _ end: String) -> String? {
+            guard let a = text.range(of: start), let b = text.range(of: end, range: a.upperBound..<text.endIndex) else { return nil }
+            return String(text[a.lowerBound..<b.lowerBound])
+        }
+        let help = flat(AppVersion.helpMessage)
+        let readme = flat(try String(contentsOf: root.appendingPathComponent("README.md"), encoding: .utf8))
+        let claude = flat(try String(contentsOf: root.appendingPathComponent("CLAUDE.md"), encoding: .utf8))
+        let lists: [(String, String?)] = [
+            ("help detailed", between(help, "1 an error:", "3 the write")),
+            ("help summary", between(help, "Exit codes (set, set-pair):", "· 2")),
+            ("README comment", between(readme, "The exit code says whether the NEW value", "3 = it")),
+            ("README line", between(readme, "Exit codes for `set` / `set-pair`", "· `2`")),
+            ("CLAUDE.md", between(claude, "Exit codes you should react to", "· `2`")),
+        ]
+        let states = ["unchanged", "left in place", "empty as far as the command can see",
+                      "restored previous value", "another item found there", "unknown"]
+        for (name, text) in lists {
+            guard let text else { XCTFail("\(name): exit-1 list not found"); continue }
+            for state in states {
+                XCTAssertTrue(text.lowercased().contains(state), "\(name) is missing \"\(state)\": \(text)")
+            }
+            XCTAssertFalse(text.contains("another writer put there"), "\(name): the code observes an item, not who wrote it")
+        }
+    }
+
+    func testTheOwnItemConfirmationSaysWhenTheOldValueComesBack() {
+        // Round-10 verify (Codex): the clipboard confirmation promised a restore
+        // "if the store fails"; the code restores only after a failed add.
+        let text = ownItemOverwriteNotice(daemon: false)
+        XCTAssertFalse(text.contains("only if the store fails"), text)
+        XCTAssertTrue(text.contains("only if that add itself fails"), text)
+        XCTAssertTrue(text.contains("left in place"), text)
+        XCTAssertTrue(ownItemOverwriteNotice(daemon: true).contains("daemon-readable"))
+    }
+
     func testRotationUnreadableReadBackSaysThePreviousValueWasReplaced() throws {
         defer { resetSeams() }
         try KeychainStore.save(service: service, account: "own", value: "v1")
@@ -923,7 +988,7 @@ final class KeychainStoreTests: XCTestCase {
         let warning = PromptDialog.warningText(daemon: false, replacing: existing) ?? ""
         XCTAssertFalse(warning.contains("application can read") || warning.contains("applications can read"),
                        "a wrapped-export entry is not read access: \(warning)")
-        XCTAssertTrue(warning.contains("also trusts 1 other application"), warning)
+        XCTAssertTrue(warning.contains("trusts 1 application other than this binary"), warning)
         // The refusal evidence does not claim this binary is trusted either.
         XCTAssertThrowsError(try KeychainStore.save(service: service, account: "wo", value: "new")) { err in
             let m = (err as? LocalizedError)?.errorDescription ?? ""

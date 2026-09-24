@@ -37,7 +37,7 @@ enum AppVersion {
 
       Plain `set` / `set-pair` on an existing item: if its decrypt ACL trusts THIS
       binary and nothing else, the item is deleted by reference and re-created
-      with the new value and the requested ACL (the old value is re-stored if
+      with the new value and the requested ACL (the old value is re-stored only if
       that fails). Anything else is REFUSED before the dialog opens: an item
       whose ACL trusts any other application (the `security` CLI, another copy
       of che-keychain at a different path, an app you once clicked "Always
@@ -117,10 +117,12 @@ enum AppVersion {
            --replace does delete the PREVIOUS item before adding the new one. The
            report says which of these the destination is in: unchanged; holding a
            value that read back empty or different and was LEFT IN PLACE (a name
-           lookup cannot show it is this write's); empty (on a rotation or
-           --replace, the previous item was deleted and not put back); holding the restored previous
-           value (only after a failed add, and only into an empty destination);
-           or unknown. Inspect the destination before deleting anything.
+           lookup cannot show it is this write's); empty as far as the command
+           can see (on a rotation or --replace, the previous item was deleted
+           and not put back); holding the restored previous value (only after a
+           failed add, and only into an empty destination); holding another
+           item found there when the restore was attempted (left alone); or
+           unknown. Inspect the destination before deleting anything.
         3  the write was accepted but could not be verified (keychain locked, or
            the match was ambiguous); cleanup leaves the destination alone.
            Inspect ambiguous matches in Keychain Access; unlocking is not a remedy
@@ -154,8 +156,8 @@ enum AppVersion {
       Exit codes (set, set-pair): 0 stored and verified · 1 any other error,
       including "the new value did not land" — the slot is unchanged, holds
       a value that read back wrong and was left in place, holds the restored
-      previous value, holds an item another writer put there, is empty, or
-      has an unknown state; the message says
+      previous value, holds another item found there (left alone), is empty
+      as far as the command can see, or has an unknown state; the message says
       which · 2
       cancelled · 3 write accepted but unverified · 4 restore does not match the
       backup (above). For

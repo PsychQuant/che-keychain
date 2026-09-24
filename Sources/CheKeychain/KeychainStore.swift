@@ -14,7 +14,7 @@ enum MismatchReason: String {
 
 /// Why a rotation's previous value could not be put back. Most cases leave the
 /// slot empty; `readdFailed` and `destinationUnknown` leave it unknown and
-/// `destinationOccupied` leaves whatever another writer put there.
+/// `destinationOccupied` leaves whatever item was found there.
 enum RestoreLoss: Equatable {
     /// The previous value could not be read before the replace (locked keychain / prompt needed).
     case previousUnreadable
@@ -135,13 +135,14 @@ enum KeychainError: Error, LocalizedError {
     case replacementProbeCleanupFailed(probeService: String)
     case explicitReplacementFailed(service: String, account: String, detail: String, recovery: ExplicitRestoreOutcome)
     /// The item's access list trusts some application other than this binary
-    /// (`owners` lists those other applications — never this binary — preceded by
-    /// a description of any allow-all entry, which is not an application), or no
-    /// entry at all could be attributed (`owners` empty). che-keychain never silently
+    /// (`owners` lists those other applications — never this binary), or no
+    /// entry at all could be attributed (`owners` empty). `allowAll` describes an
+    /// allow-all entry in the same list; it is reported apart from `owners`
+    /// because it is not an application (round-10 verify). che-keychain never silently
     /// replaces such an item — SecItemUpdate would "succeed" while leaving the
     /// secret under another program's ACL (round 1 of #5) — so it refuses and
     /// names the explicit remedy.
-    case foreignOwned(service: String, account: String, owners: [String], selfPath: String)
+    case foreignOwned(service: String, account: String, owners: [String], selfPath: String, allowAll: KeychainStore.AllowAllScope? = nil)
     /// A caller without a dialog (`--stdin`) asked to re-create an existing
     /// item whose plaintext is not already open to every application as an
     /// allow-all one: only the dialog may widen access.
@@ -260,15 +261,18 @@ enum KeychainError: Error, LocalizedError {
             }
             return "explicit replacement of \(sanitize(svc))/\(sanitize(acct)) failed: \(detail).\n  \(outcome)"
         case .notFound: return "keychain item not found"
-        case .foreignOwned(let svc, let acct, let owners, let me):
+        case .foreignOwned(let svc, let acct, let owners, let me, let allowAll):
             let shown = owners.prefix(8).joined(separator: ", ") + (owners.count > 8 ? ", … and \(owners.count - 8) more" : "")
-            let evidence = owners.isEmpty
-                ? "its decrypt ACL has no entry that names an application, so nothing ties it to this binary"
+            var evidence = owners.isEmpty
+                ? "its access list has no entry that names an application, so nothing ties it to this binary"
                 : "its access list trusts applications other than this binary (\(me)): \(shown)"
+            // Stated apart from the applications, and before the capped list, so
+            // it is never counted as one and never cut off.
+            if let allowAll { evidence = "it has an allow-all entry — \(KeychainStore.allowAllOwnerLabel(allowAll)) — and " + evidence }
             return """
             keychain item \(svc)/\(acct) already exists but is not exclusively trusted to this che-keychain binary:
               \(evidence).
-              Nothing was written to \(svc)/\(acct). che-keychain only overwrites items whose decrypt ACL trusts this \
+              Nothing was written to \(svc)/\(acct). che-keychain only overwrites items whose access list trusts this \
             binary alone; anything else may belong to another program, and replacing it would destroy that program's secret.
               Replacing or discarding it is the user's decision, not the caller's: do neither without the user's explicit say-so.
               To replace it: `che-keychain set --replace` with the same service/account. \(replaceBackupTerms)
@@ -584,7 +588,7 @@ enum KeychainStore {
         switch existing {
         case .foreign(let owners, let allowAll):
             throw KeychainError.foreignOwned(service: service, account: account,
-                                             owners: (allowAll.map { [allowAllOwnerLabel($0)] } ?? []) + owners, selfPath: try selfPath())
+                                             owners: owners, selfPath: try selfPath(), allowAll: allowAll)
         case .allowAll(let scope):
             throw KeychainError.unattributable(service: service, account: account, scope: scope)
         case .unsupported:

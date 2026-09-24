@@ -145,8 +145,7 @@ case .set(let a):
             overwrite = "New item: nothing is stored at this destination yet."
             existsAtDialog = false
         case .own:
-            overwrite = "An item ALREADY EXISTS at this destination: Store REPLACES its value (the old value is put back only if the store fails)."
-                + (a.daemon ? " It is prompt-on-read today; Store CHANGES it to daemon-readable." : "")
+            overwrite = ownItemOverwriteNotice(daemon: a.daemon)
             existsAtDialog = true
         case .foreign, .allowAll:
             guard a.replace else { die("the destination changed to an item this binary cannot replace — nothing was written.") }
