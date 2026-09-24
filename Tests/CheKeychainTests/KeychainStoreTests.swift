@@ -667,6 +667,29 @@ final class KeychainStoreTests: XCTestCase {
         }
         resetSeams()
         XCTAssertEqual(try readOwn(account: "own"), "v1", "the previous secret survives a failed add")
+        // verifyRule: the plain path re-creates it as an item only this binary can read.
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "own"), .own)
+    }
+
+    func testAnEmptyOldValueIsNeverWrittenBackAndTheReportDoesNotGuessTheState() throws {
+        // copyRule: the plain path never writes back an empty copy; the report
+        // then says the state is unknown instead of inferring "absent" (round-13 verify).
+        defer { resetSeams() }
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+            kSecAttrAccount as String: "e0", kSecValueData as String: Data()]
+        XCTAssertEqual(SecItemAdd(q as CFDictionary, nil), errSecSuccess)
+        XCTAssertEqual(try KeychainStore.inspectExisting(service: service, account: "e0"), .own)
+        var calls = 0
+        KeychainStore.addRawStatusOverride = { _, account, _ in
+            guard account == "e0" else { return nil }
+            calls += 1; return calls == 1 ? errSecIO : nil
+        }
+        XCTAssertThrowsError(try KeychainStore.save(service: service, account: "e0", value: "new")) { err in
+            guard case KeychainError.replaceFailed(_, _, _, .lost(.previousEmpty)) = err else { return XCTFail("got \(err)") }
+            let m = (err as? LocalizedError)?.errorDescription ?? ""
+            XCTAssertTrue(m.contains("state is unknown"), m)
+            XCTAssertFalse(m.contains("is now absent"), m)
+        }
     }
 
     func testAFailedAddDoesNotWriteTheBackupOverSomethingElse() throws {
@@ -767,7 +790,8 @@ final class KeychainStoreTests: XCTestCase {
                       "Recovery can still fail or remain unverified", "non-allow-all",
                       "holds the restored previous value", "holding the restored previous value",
                       "bytes and access policy, in the original keychain", "until the new value is verified",
-                      "until the new one is verified", "backed up until"]
+                      "until the new one is verified", "backed up until",
+                      "whose bytes or access settings do not match", "Exit 4 means that comparison failed"]
         for (name, text) in texts {
             XCTAssertTrue(text.contains(AppVersion.restoreRule), "\(name) does not quote the restore rule")
             XCTAssertTrue(text.contains(AppVersion.copyRule), "\(name) does not quote the copy rule")
@@ -781,7 +805,9 @@ final class KeychainStoreTests: XCTestCase {
         // The unreleased changelog describes the same behaviour; it must not
         // carry a superseded phrasing either (round-12 verify: it was not scanned).
         let changelog = try String(contentsOf: root.appendingPathComponent("CHANGELOG.md"), encoding: .utf8)
-        let unreleased = flat(String(changelog[changelog.range(of: "## [Unreleased]")!.lowerBound..<(changelog.range(of: "\n## [0.")?.lowerBound ?? changelog.endIndex)]))
+        guard let head = changelog.range(of: "## [Unreleased]") else { return XCTFail("CHANGELOG has no [Unreleased] section") }
+        let end = changelog.range(of: "\n## [", range: head.upperBound..<changelog.endIndex)?.lowerBound ?? changelog.endIndex
+        let unreleased = flat(String(changelog[head.lowerBound..<end]))
         for phrase in banned + ["tracked in #14"] {
             XCTAssertFalse(unreleased.contains(phrase), "CHANGELOG [Unreleased] still says \"\(phrase)\"")
         }
@@ -902,8 +928,8 @@ final class KeychainStoreTests: XCTestCase {
     }
 
     func testExitFourHasOneMeaningAcrossEveryPathThatCanProduceIt() {
-        // 4 says one thing: a restore was accepted whose bytes or access settings
-        // do not match the backup. Nothing else returns it, so the help text and
+        // 4 says one thing: a restore was accepted that differs from the backup in
+        // what was compared (bytes; under --replace also access settings and keychain). Nothing else returns it, so the help text and
         // the documentation can state it without qualification (#7 M2 / #15).
         XCTAssertEqual(KeychainError.explicitReplacementFailed(service: "s", account: "a", detail: "d", recovery: .mismatch).exitCode, 4)
         XCTAssertEqual(KeychainError.replaceFailed(service: "s", account: "a", addStatus: -25308, restore: .mismatch(.differs)).exitCode, 4)

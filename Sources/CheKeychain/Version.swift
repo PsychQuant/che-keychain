@@ -11,7 +11,7 @@ enum AppVersion {
     static let copyRule = "Plain `set` and `set-pair` obtain that copy only when they can read the old value without a prompt, and never write back an empty one; `set --replace` does not start without a copy."
     /// How a written-back value is checked — different on the two paths
     /// (round-12 verify: a README sentence claimed the --replace checks for both).
-    static let verifyRule = "What is written back is read back: `set --replace` restores the original access settings and compares the bytes, access settings and keychain with the backup; plain `set` and `set-pair` re-create the old value as an item only this binary can read and compare the bytes only. Exit 4 means that comparison failed."
+    static let verifyRule = "What is written back is read back: `set --replace` restores the original access settings and compares the bytes, access settings and keychain with the backup; plain `set` and `set-pair` re-create the old value as an item only this binary can read and compare the bytes only. Exit 4 means the comparison found a difference; a comparison that could not be made exits 1."
     static let helpMessage = """
     \(versionString)
       A trust-isolated credential prompt for macOS keychain — the dialog runs in
@@ -134,8 +134,9 @@ enum AppVersion {
            the match was ambiguous); cleanup leaves the destination alone.
            Inspect ambiguous matches in Keychain Access; unlocking is not a remedy
            for multiple matches. The report says whether a previous item was deleted.
-        4  a restore was accepted whose bytes or access settings do not match
-           the backup: the destination holds an item that is not the one that
+        4  a restore was accepted that differs from the backup in what was
+           compared (the bytes; under `--replace` also the access settings and
+           keychain): the destination holds an item that is not the one that
            was backed up. Inspect it in Keychain Access before retrying; do not
            remove it on this report alone.
 

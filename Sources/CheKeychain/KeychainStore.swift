@@ -49,7 +49,7 @@ enum RestoreOutcome: Equatable {
     case lost(RestoreLoss)
 
     /// The new value never landed (1), unless a restore was accepted whose bytes
-    /// or access settings do not match the backup (4) — the one thing this
+    /// do not match the backup (4; this path compares bytes only) — the one thing this
     /// command can still leave at a destination without being able to prove it.
     var exitCode: Int32 { if case .mismatch = self { return 4 }; return 1 }
 }
@@ -250,9 +250,9 @@ enum KeychainError: Error, LocalizedError {
         case .explicitReplacementFailed(let svc, let acct, let detail, let recovery):
             let outcome: String
             switch recovery {
-            case .restored: outcome = "The original bytes and access settings were restored and verified; other metadata (label, comments, dates) was not preserved."
-            case .unverified: outcome = "The restore was accepted but the original bytes and access settings could not be verified. Inspect the destination before retrying."
-            case .mismatch: outcome = "The restore was accepted but its bytes or access settings differ from the backup. The destination is UNVERIFIED; inspect it in Keychain Access before taking further action."
+            case .restored: outcome = "The original bytes, access settings and keychain were restored and verified; other metadata (label, comments, dates) was not preserved."
+            case .unverified: outcome = "The restore was accepted but the original bytes, access settings and keychain could not be verified. Inspect the destination before retrying."
+            case .mismatch: outcome = "The restore was accepted but its bytes, access settings or keychain differ from the backup. The destination is UNVERIFIED; inspect it in Keychain Access before taking further action."
             case .preparationFailed: outcome = "The original access settings could NOT be prepared for restoration; the destination's state is unknown. Inspect it before retrying."
             case .failed(let st): outcome = "The original item could NOT be restored (OSStatus \(st)); the destination's state is unknown. Inspect it before retrying."
             case .destinationOccupied: outcome = "An item was already at the destination, so the backup was NOT written over it. Inspect what is there in Keychain Access before taking further action."
@@ -439,8 +439,12 @@ enum KeychainError: Error, LocalizedError {
                     outcome = "The previous item was NOT restored (\(why)). Whatever is at \(sanitize(svc))/\(sanitize(acct)) now was left untouched; inspect it in Keychain Access before taking further action."
                 } else if case .destinationUnknown = loss {
                     outcome = "The previous item was NOT restored (\(why)); the destination's state is unknown. Inspect it in Keychain Access before taking further action."
+                } else if case .readdVanished = loss {
+                    outcome = "The previous item could NOT be restored (\(why)) — \(sanitize(svc))/\(sanitize(acct)) is empty as far as this command can see. Re-run `set` to store it again."
                 } else {
-                    outcome = "The previous item could NOT be restored (\(why)) — \(sanitize(svc))/\(sanitize(acct)) is now absent (unless something else re-created it meanwhile). Re-run `set` to store it again."
+                    // No copy to write back, so the destination was never inspected:
+                    // say that, rather than infer it is empty (round-13 verify).
+                    outcome = "The previous item could NOT be restored (\(why)); nothing was written back and the destination was not inspected, so its state is unknown. Inspect it before storing again."
                 }
             }
             return """
@@ -980,8 +984,12 @@ enum KeychainStore {
         let access = daemon ? try allowAllAccess(label: daemonLabel(service: service, account: account)) : nil
         guard let current = try? inspect(service: service, account: account), let currentItem = current.item,
               CFEqual(currentItem, item),
-              let now = try? replacementBackup(currentItem, service: service, account: account),
-              now.data == backup.data, now.accessRecords == backup.accessRecords, CFEqual(now.keychain, backup.keychain) else {
+              var now = try? replacementBackup(currentItem, service: service, account: account) else {
+            throw KeychainError.replacementChanged(service: service, account: account)
+        }
+        // A second copy of the old value; zeroed like the backup (README "Copies").
+        defer { now.data.resetBytes(in: 0..<now.data.count) }
+        guard now.data == backup.data, now.accessRecords == backup.accessRecords, CFEqual(now.keychain, backup.keychain) else {
             throw KeychainError.replacementChanged(service: service, account: account)
         }
         // The consent was given for the class the dialog showed, checked in `save`
