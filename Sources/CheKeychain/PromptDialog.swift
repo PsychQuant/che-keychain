@@ -34,7 +34,7 @@ enum PromptDialog {
         let now: String
         switch existing {
         case .none:
-            return daemon ? "daemon-readable ACL: other keychain authorization may still be required" : nil
+            return daemon ? "daemon-readable ACL — allows ALL applications at the application-ACL layer; other keychain authorization may still be required" : nil
         case .own:
             now = "a secret only this binary can read"
         case .allowAll:

@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The non-interactive widening guard no longer treats an allow-all **export-wrapped** entry as "already readable by everything". Exporting the wrapped value does not reveal the plaintext, so `set --replace --stdin --daemon` on an item whose decrypt was limited to this binary could previously rewrite it with an allow-all decrypt ACL. Found by the cross-model reviewer; a test reproduces it (#7).
+
+- Rotating a `--daemon` item is `set --replace --daemon`: one command that backs up the old value before replacing it. The 0.3.0 advice — `unset` then `set --daemon` — discards the old value and is now given only as the user's decision to do so, in the help, the refusal messages and CLAUDE.md. The operation is not atomic (#7).
+
+- Moving the binary (#9): an identical binary at another path was observed to migrate its items with `set --replace`; a copy re-signed ad hoc under another identifier was refused at the backup read, leaving the items untouched. A different Developer ID-signed release has not been tested.
+
+- A new `--daemon` item's dialog warning now says it allows all applications at the application-ACL layer, not only that other authorization may be required.
+
 - `set --replace` refuses an item whose old value cannot be read with prompts disabled — items created by `security add-generic-password` are the tested case — because there would be no backup to put back. The refusal names the cause it observed (value unreadable, access settings unreadable, or policy not reproducible) and says che-keychain holds no copy of the old value. It offers `che-keychain unset` only as the user's decision to discard that value — the same remedy plain `set` gives (#7).
 
 - Nothing at a destination is deleted once the keychain has accepted the write. A name lookup finds whichever item currently carries that service and account, and an ACL says which binary may read an item rather than which write created it, so neither shows the item is this one's. A writer that deleted and recreated the destination between the add and the read-back previously had its credential deleted and an older backup written over the slot. A proven-bad value is now left in place and reported; a backup goes back only into a destination observed to hold no item, and only when the add itself failed (#7).

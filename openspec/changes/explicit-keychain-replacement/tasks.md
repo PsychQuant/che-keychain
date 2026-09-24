@@ -60,4 +60,14 @@ Sections 1-3 shipped in `7082713` and their evidence stands. Independent verific
 - [x] 8.2 (I3/I4) Rule 7: the routine rotation for own `--daemon` items is `set --replace --daemon`; `unset` then `set` only after a backup refusal and the user's decision. The refusal message gives the keep option first and tells the caller not to run the `unset` line without the user's explicit confirmation; tests pin the order and the wording.
 - [x] 8.3 (I5) Decision on #7 (https://github.com/PsychQuant/che-keychain/issues/7#issuecomment-5798429935) records that deletion is the user's decision, superseding the errata's "no deletion advice".
 - [x] 8.4 (LOW) `policyNotReproducible` wording covers the rebuild failure; help summary names both remedies; the `unset` test covers the `-A` shape; stale test names and 6.1/6.4 notes updated.
-- [ ] 8.5 Full suite green, then `/idd-verify --pr 17` round 6.
+- [x] 8.5 Full suite green, then `/idd-verify --pr 17` round 6 — ran 2026-09-24 with Codex enabled (6-AI): FAIL (2 HIGH); findings became section 9.
+
+## 9. Round 7 — round-6 verify findings
+
+- [x] 9.1 (J1, HIGH, cross-model) The widening guard uses a plaintext-only authorization set (decrypt, any, export-clear); an allow-all export-wrapped entry no longer counts as "readable by everything". RED test reproduced the widening before the fix; ownership classification stays conservative.
+- [x] 9.2 (J2/J3) Help and the plain-`set` refusals (`unattributable`, `foreignOwned`) give the backed-up `set --replace [--daemon]` path first and `unset` only as the user's decision; a test pins the order and wording.
+- [x] 9.3 (J4) CLAUDE.md rule 7 no longer promises the reader is never without a credential; it states the non-atomic window.
+- [x] 9.4 (J5) A new `--daemon` item's dialog warning states the all-applications scope.
+- [x] 9.5 (J6) #9 docs state the two observed cases only and say a different Developer ID-signed release is untested.
+- [x] 9.6 (LOW) Test force-unwrap removed; CHANGELOG records the rotation change, the #9 observation and the J1 fix. A repo-wide grep for rotation, `unset` and #9 wording was run before and after the edits.
+- [ ] 9.7 Full suite green, then `/idd-verify --pr 17` round 7 (Codex on).

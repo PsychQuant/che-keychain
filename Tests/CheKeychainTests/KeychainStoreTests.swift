@@ -518,7 +518,11 @@ final class KeychainStoreTests: XCTestCase {
                 XCTAssertTrue(msg.contains("user's decision"), "deletion is framed as the user's call, not the caller's: \(msg)")
                 XCTAssertTrue(msg.contains("To keep the old value"), "the keep option comes first: \(msg)")
                 XCTAssertTrue(msg.contains("do not run this without the user's explicit confirmation"), msg)
-                XCTAssertLessThan(msg.range(of: "To keep the old value")!.lowerBound, msg.range(of: "che-keychain unset")!.lowerBound, "keep before discard")
+                if let keep = msg.range(of: "To keep the old value"), let discard = msg.range(of: "che-keychain unset") {
+                    XCTAssertLessThan(keep.lowerBound, discard.lowerBound, "keep before discard")
+                } else {
+                    XCTFail("both the keep option and the unset line must be present: \(msg)")
+                }
                 XCTAssertFalse(msg.contains("cannot take"), "a refusal now is not a permanent verdict: \(msg)")
             }
             XCTAssertEqual(try readForeign(account: account), "old", "\(account): the original item is untouched")
@@ -811,6 +815,25 @@ final class KeychainStoreTests: XCTestCase {
         // Same-mode rotation of an own item stays allowed without widening.
         try KeychainStore.save(service: service, account: "own", value: "v3", daemon: false, mayWidenExistingACL: false)
         XCTAssertEqual(try readOwn(account: "own"), "v3")
+    }
+
+    func testPlainSetRefusalsOfferTheBackedUpPathBeforeTheDiscardPath() {
+        // Round-6 verify J3: the refusals a user sees from plain `set` must agree
+        // with CLAUDE.md rule 7 — the backed-up `--replace` path first, `unset`
+        // only as the user's decision to discard. Each claim is backed:
+        // own --daemon rotation (testSaveWithoutACLWidening… / explicit replace
+        // tests), "Always Allow" → own (testExplicitReplaceHandlesReadableForeignACLWithFreshAccess),
+        // unreadable → refused unchanged (testASecurityCreatedItemIsRefusedCleanly…).
+        let unattr = KeychainError.unattributable(service: "s", account: "a").errorDescription ?? ""
+        let foreign = KeychainError.foreignOwned(service: "s", account: "a", owners: ["/usr/bin/security"], selfPath: "/me").errorDescription ?? ""
+        for (name, m, replaceCmd) in [("unattributable", unattr, "set --replace --daemon"), ("foreignOwned", foreign, "set --replace")] {
+            XCTAssertTrue(m.contains(replaceCmd), "\(name): \(m)")
+            XCTAssertTrue(m.contains("user's decision, not the caller's"), "\(name): \(m)")
+            if let rep = m.range(of: replaceCmd), let del = m.range(of: "che-keychain unset") {
+                XCTAssertLessThan(rep.lowerBound, del.lowerBound, "\(name): backed-up path before discard")
+            } else { XCTFail("\(name): both paths must be present: \(m)") }
+        }
+        XCTAssertFalse(foreign.contains("the same `unset` then `set` re-creates"), foreign)
     }
 
     func testForeignOwnedMessageQuotesTheRemedyAndCapsOwners() {

@@ -20,8 +20,9 @@ final class PromptDialogTests: XCTestCase {
         // Both facts must survive on the protected first line — the worst combination
         // (an existing secret destroyed AND made world-readable) must not lose one of them.
         XCTAssertNil(PromptDialog.warningText(daemon: false, replacing: KeychainStore.Existing.none))
-        XCTAssertEqual(PromptDialog.warningText(daemon: true, replacing: KeychainStore.Existing.none),
-                       "daemon-readable ACL: other keychain authorization may still be required")
+        let fresh = PromptDialog.warningText(daemon: true, replacing: KeychainStore.Existing.none) ?? ""
+        XCTAssertTrue(fresh.contains("ALL applications") && fresh.contains("other keychain authorization may still be required"),
+                      "a new --daemon item must say its scope, not only its caveat (J5): \(fresh)")
         let replaceOnly = PromptDialog.warningText(daemon: false, replacing: .own) ?? ""
         XCTAssertTrue(replaceOnly.contains("replaces"), replaceOnly)
         let both = PromptDialog.warningText(daemon: true, replacing: .own) ?? ""

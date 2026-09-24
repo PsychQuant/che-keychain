@@ -43,8 +43,10 @@ enum AppVersion {
       any other application (the `security` CLI, another copy of che-keychain at
       a different path, an app you once clicked "Always Allow" for), or an item
       with an "allow all applications" entry — which carries no owner identity
-      and is also what --daemon writes, so re-setting a daemon item is `unset`
-      then `set --daemon`. che-keychain never overwrites an item whose ACL lets
+      and is also what --daemon writes. To rotate a daemon item use
+      `set --replace --daemon`, which backs up the old value before replacing
+      it (not atomic); `unset` then `set --daemon` discards the old value and
+      is the user's call, not the caller's. che-keychain never overwrites an item whose ACL lets
       anything but this binary read it. "This binary alone" is a path identity,
       not provenance: an item another program pre-created for this binary only
       counts as ours and is replaced. Refusals are decided before the dialog;
@@ -70,9 +72,10 @@ enum AppVersion {
       items foreign to the new copy; a symlink resolves to the same path.
       Keep using the original copy, or run --replace from the new one: it
       works when the new copy can read the old value with prompts disabled.
-      Observed: the same build copied to another path (same code signature)
-      migrates this way; a copy with a different code signature is refused at
-      the backup read and the original is left untouched. A matching
+      Observed: the same build copied to another path (identical binary)
+      migrated this way; a copy re-signed ad hoc under another identifier was
+      refused at the backup read and left the original untouched. Whether a
+      different Developer ID-signed release is admitted has not been tested. A matching
       filename or signing team alone does not authorize replacement.
 
       Value sources for `set` (0.3.0+): the dialog (default); `--from-clipboard`

@@ -258,12 +258,15 @@ enum KeychainError: Error, LocalizedError {
               \(evidence).
               Nothing was written to \(svc)/\(acct). che-keychain only overwrites items whose decrypt ACL trusts this \
             binary alone; anything else may belong to another program, and replacing it would destroy that program's secret.
-              If nothing else needs it — this permanently deletes the stored secret — remove it explicitly, then retry:
+              To replace it while keeping a backup: `che-keychain set --replace` with the same service/account. \
+            It proceeds only if this binary can read the old value without a prompt, and otherwise refuses and changes nothing.
+              To discard the old value instead — the user's decision, not the caller's; it permanently deletes the stored secret — \
+            remove it explicitly, then retry:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
               (`unset` removes every match it can, an iCloud-synchronized twin included; `security delete-generic-password \
             -s \(shellQuote(svc)) -a \(shellQuote(acct))` removes one local match per call.)
-              If it was created by another copy of che-keychain (different install path), use that copy instead. \
-            If you added another application via "Always Allow", the same `unset` then `set` re-creates it trusted to this binary only.
+              If it was created by another copy of che-keychain (different install path), use that copy, or `set --replace` from this one. \
+            If you added another application via "Always Allow", `set --replace` re-creates it trusted to this binary only.
             """
         case .unsupportedItem(let svc, let acct):
             return """
@@ -290,7 +293,10 @@ enum KeychainError: Error, LocalizedError {
             no owner identity — che-keychain cannot tell whether it created it (this is also what `--daemon` items look like).
               Nothing was written to \(svc)/\(acct). Overwriting an item that may belong to another program is destructive, \
             so it is never a side effect of `set` — not even with --daemon.
-              Remove it explicitly first (this deletes the stored secret), then retry with the mode you want:
+              To rotate it while keeping a backup (the routine case for a --daemon item): `che-keychain set --replace --daemon` \
+            with the same service/account.
+              To discard the old value instead — the user's decision, not the caller's; it deletes the stored secret — remove it \
+            explicitly first, then retry with the mode you want:
                 che-keychain unset --service \(shellQuote(svc)) --account \(shellQuote(acct))
             """
         case .undeletable(let svc, let deleted, let refused):
